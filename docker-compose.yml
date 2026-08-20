@@ -1,0 +1,16 @@
+services:
+  api:
+    build: ./api
+    ports: ["8000:8000"]
+    volumes:
+      - ./data:/app/data
+    environment:
+      DATABASE_URL: sqlite:///./data/ledger.db
+      DEMO_MODE: ${DEMO_MODE:-true}
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY}
+  web:
+    build: ./web
+    ports: ["5173:5173"]
+    environment:
+      VITE_API_URL: http://localhost:8000
+    depends_on: [api]

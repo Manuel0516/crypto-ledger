@@ -1,0 +1,19 @@
+# Local databases, journals, backups, reports, and tax scratch output.
+data/
+api/data/
+api/log/
+
+# Local agent/editor/runtime metadata.
+.claude/
+.codex/
+.vite/
+
+**/__pycache__/
+*.pyc
+api/.venv/
+web/node_modules/
+web/dist/
+web/tsconfig.tsbuildinfo
+.DS_Store
+.env
+*.log
