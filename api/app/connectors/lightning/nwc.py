@@ -250,7 +250,7 @@ class NWCConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol="BTC",
                 amount="0",
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Lightning payment {(state or 'unknown').lower()} — no funds moved · {payload.get('payment_hash', '')[:16]}",
                 tx_hash=payload.get("payment_hash"),
                 description=payload.get("description"),
@@ -278,7 +278,7 @@ class NWCConnector:
             # one portfolio figure. event_subtype above still distinguishes
             # them in Activity.
             amount=_msat_to_btc(payload.get("amount_msat")),
-            source_label=self.account_label,
+            account_name=self.account_label,
             notes=f"Lightning {'receive' if is_incoming else 'payment'} · {payload.get('payment_hash', '')[:16]}",
             fees=fees,
             tx_hash=payload.get("payment_hash"),

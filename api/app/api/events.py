@@ -5,15 +5,16 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
 from sqlalchemy import Numeric, and_, cast, or_
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from app.connectors.base import RawRecord
 from app.connectors.manual import ManualConnector
 from app.core.assets.registry import get_or_create_asset
 from app.core.ledger.overrides import EDITABLE_FIELDS, apply_override, effective_values, restore_automatic_value
 from app.core.ledger.service import ingest, refresh_valuations
+from app.core.ledger.taxonomy import MANUAL_EVENT_TYPES
 from app.core.settings import get_or_create_settings, minimum_activity_threshold
 from app.core.attachments.service import delete_attachment_file
 from app.db.models import Account, Asset, Attachment, Event, EventLink, Fee, Issue, Override, RawEvent, Valuation
@@ -53,23 +54,46 @@ def _serialize_issue(issue: Issue) -> dict:
     }
 
 
+def _address_label_map(session: Session) -> dict[str, str]:
+    """Map known public wallet addresses to the wallet name chosen by the user."""
+    labels: dict[str, str] = {}
+    for name, address in session.query(Account.name, Account.address).filter(Account.address.isnot(None)).all():
+        normalized = str(address).strip().lower()
+        if normalized:
+            labels.setdefault(normalized, name)
+    return labels
+
+
+def _display_address(address: str | None, labels: dict[str, str]) -> str | None:
+    if not address:
+        return None
+    return labels.get(address.strip().lower(), address)
+
+
 def _serialize_summary(
     session: Session,
     event: Event,
     *,
     account_names: set[str] | None = None,
     open_issue_ids: set[int] | None = None,
+    address_labels: dict[str, str] | None = None,
 ) -> dict:
     values, modified = effective_values(session, event)
     valuations = {v.quote_currency: v.total_value for v in event.valuations}
     first_fee = event.fees[0] if event.fees else None
     account_names = account_names if account_names is not None else set()
     open_issue_ids = open_issue_ids if open_issue_ids is not None else set()
+    address_labels = address_labels if address_labels is not None else _address_label_map(session)
+    account_name = event.account.name if event.account is not None else None
     return {
         "id": event.id,
+        "asset_id": event.primary_asset_id,
         "asset_symbol": event.primary_asset.symbol,
+        "asset_blocked": event.primary_asset.is_blocked,
         "network": event.primary_asset.network,
+        "secondary_asset_id": event.secondary_asset_id,
         "secondary_asset_symbol": event.secondary_asset.symbol if event.secondary_asset else None,
+        "secondary_asset_blocked": event.secondary_asset.is_blocked if event.secondary_asset else False,
         "direction": event.direction,
         "status": event.status,
         "provenance": event.provenance,
@@ -78,36 +102,28 @@ def _serialize_summary(
         "source_timezone": event.source_timezone,
         "imported_at": event.raw_event.received_at.isoformat() if event.raw_event else event.created_at.isoformat(),
         "account_id": event.account_id,
+        "account_name": account_name,
         "fee_amount": first_fee.fee_amount if first_fee else None,
         "fee_asset_symbol": first_fee.fee_asset.symbol if first_fee else None,
         "fee_count": len(event.fees),
+        "address_from_label": _display_address(values.get("address_from"), address_labels),
+        "address_to_label": _display_address(values.get("address_to"), address_labels),
         "eur_value": valuations.get("EUR"),
         "sek_value": valuations.get("SEK"),
         "modified": modified or any(v.manual_override for v in event.valuations),
         "has_open_issue": event.id in open_issue_ids,
         # A user can explicitly classify a one-sided transfer as internal when
-        # its counterpart is outside the ledger. Keep the existing account
-        # label inference for backwards compatibility, but expose the stored
-        # classification as the durable source of truth.
-        "is_internal": event.internal_transfer or (bool(values.get("destination_label")) and values["destination_label"] in account_names),
+        # the destination is outside the ledger. The activity's `address_to`
+        # value is also considered internal when it matches a known account
+        # name or address.
+        "is_internal": event.internal_transfer or (
+            bool(values.get("address_to"))
+            and (values["address_to"] in account_names or values["address_to"].strip().lower() in address_labels)
+        ),
         "internal_transfer": event.internal_transfer,
-        "description": values.get("description"),
-        "merchant": values.get("merchant"),
-        "tags": _event_tags(values.get("tags_json")),
-        "evidence_reference": values.get("evidence_reference"),
         "linked_event_count": len(event.outgoing_links) + len(event.incoming_links),
-        **values,
+        **{key: value for key, value in values.items() if key not in {"description", "merchant", "tags_json", "evidence_reference", "notes"}},
     }
-
-
-def _event_tags(tags_json: str | None) -> list[str]:
-    if not tags_json:
-        return []
-    try:
-        tags = json.loads(tags_json)
-    except json.JSONDecodeError:
-        return []
-    return [str(tag) for tag in tags] if isinstance(tags, list) else []
 
 
 def _transaction_evidence(event: Event, values: dict[str, str | None]) -> dict:
@@ -162,6 +178,7 @@ def _transaction_evidence(event: Event, values: dict[str, str | None]) -> dict:
 def _event_options():
     return (
         selectinload(Event.primary_asset),
+        selectinload(Event.account),
         selectinload(Event.secondary_asset),
         selectinload(Event.raw_event),
         selectinload(Event.fees).selectinload(Fee.fee_asset),
@@ -204,8 +221,20 @@ def list_events(
     """Query the unified ledger server-side; never load the entire history in the browser."""
     settings = get_or_create_settings(session)
     account_names = {name for (name,) in session.query(Account.name).all()}
+    address_labels = _address_label_map(session)
     open_issue_ids = {eid for (eid,) in session.query(Issue.event_id).filter(Issue.resolved.is_(False), Issue.event_id.isnot(None))}
-    query = session.query(Event).join(Event.primary_asset).outerjoin(Event.raw_event)
+    secondary_asset = aliased(Asset)
+    query = (
+        session.query(Event)
+        .join(Event.primary_asset)
+        .outerjoin(Account, Event.account_id == Account.id)
+        .outerjoin(secondary_asset, Event.secondary_asset_id == secondary_asset.id)
+        .outerjoin(Event.raw_event)
+        .filter(
+            Asset.is_blocked.is_(False),
+            or_(Event.secondary_asset_id.is_(None), secondary_asset.is_blocked.is_(False)),
+        )
+    )
     # The default view is a presentation filter. The separate under-threshold
     # view exposes the records it excludes. Unpriced events stay visible
     # because hiding an event with missing valuation data would turn a pricing
@@ -237,7 +266,7 @@ def list_events(
         query = query.filter(Event.account_id == account_id)
     if source:
         needle = source.strip()
-        query = query.filter(or_(RawEvent.source_id.ilike(f"%{needle}%"), Event.source_label.ilike(f"%{needle}%")))
+        query = query.filter(or_(RawEvent.source_id.ilike(f"%{needle}%"), Account.name.ilike(f"%{needle}%"), Event.address_from.ilike(f"%{needle}%")))
     if event_type:
         query = query.filter(Event.event_type == event_type.strip().upper())
     if network:
@@ -245,7 +274,8 @@ def list_events(
     if provenance:
         query = query.filter(Event.provenance == provenance)
     if internal is not None:
-        query = query.filter(Event.destination_label.in_(account_names) if internal else or_(Event.destination_label.is_(None), Event.destination_label.notin_(account_names)))
+        known_destinations = account_names | set(address_labels)
+        query = query.filter(Event.address_to.in_(known_destinations) if internal else or_(Event.address_to.is_(None), Event.address_to.notin_(known_destinations)))
     if resolved is not None:
         issue_event_ids = session.query(Issue.event_id).filter(Issue.resolved.is_(False), Issue.event_id.isnot(None))
         query = query.filter(~Event.id.in_(issue_event_ids) if resolved else Event.id.in_(issue_event_ids))
@@ -254,9 +284,8 @@ def list_events(
         query = query.filter(or_(
             Event.tx_hash.ilike(pattern), Event.order_id.ilike(pattern), Event.trade_id.ilike(pattern),
             Event.deposit_id.ilike(pattern), Event.withdrawal_id.ilike(pattern), Event.address_from.ilike(pattern),
-            Event.address_to.ilike(pattern), Event.counterparty.ilike(pattern), Event.description.ilike(pattern),
-            Event.merchant.ilike(pattern), Event.tags_json.ilike(pattern), Event.evidence_reference.ilike(pattern),
-            Event.notes.ilike(pattern), Event.source_label.ilike(pattern), Event.destination_label.ilike(pattern),
+            Event.address_to.ilike(pattern), RawEvent.payload_json.ilike(pattern),
+            Event.address_from.ilike(pattern), Account.name.ilike(pattern),
         ))
     total = query.count()
     parsed_cursor = _parse_cursor(cursor)
@@ -278,7 +307,7 @@ def list_events(
         last = items[-1]
         next_cursor = f"{last.occurred_at.isoformat()}|{last.id}"
     return {
-        "items": [_serialize_summary(session, e, account_names=account_names, open_issue_ids=open_issue_ids) for e in items],
+        "items": [_serialize_summary(session, e, account_names=account_names, open_issue_ids=open_issue_ids, address_labels=address_labels) for e in items],
         "next_cursor": next_cursor,
         "total": total,
     }
@@ -289,11 +318,14 @@ def get_event(event_id: int, session: Session = Depends(get_session)):
     event = session.query(Event).options(*_event_options()).filter(Event.id == event_id).one_or_none()
     if event is None:
         raise HTTPException(404, "Event not found")
+    if event.primary_asset.is_blocked or (event.secondary_asset is not None and event.secondary_asset.is_blocked):
+        raise HTTPException(404, "This activity is blocked because it uses a hidden asset")
     values, modified = effective_values(session, event)
     account_names = {name for (name,) in session.query(Account.name).all()}
     open_issue_ids = {eid for (eid,) in session.query(Issue.event_id).filter(Issue.resolved.is_(False), Issue.event_id.isnot(None))}
+    address_labels = _address_label_map(session)
     return {
-        "event": _serialize_summary(session, event, account_names=account_names, open_issue_ids=open_issue_ids),
+        "event": _serialize_summary(session, event, account_names=account_names, open_issue_ids=open_issue_ids, address_labels=address_labels),
         "valuations": [
             {
                 "id": v.id,
@@ -434,17 +466,9 @@ class ManualEventIn(BaseModel):
     secondary_amount: str | None = None
     occurred_at: str
     account_id: int | None = None
-    source_label: str = "Manual"
-    destination_label: str | None = None
-    counterparty: str | None = None
-    description: str | None = None
-    merchant: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    evidence_reference: str | None = None
     source_timezone: str | None = None
     address_from: str | None = None
     address_to: str | None = None
-    notes: str | None = None
     tx_hash: str | None = None
     order_id: str | None = None
     trade_id: str | None = None
@@ -455,6 +479,15 @@ class ManualEventIn(BaseModel):
     fee_type: str = "NETWORK_FEE"
     eur_value: str | None = None
     sek_value: str | None = None
+
+    @field_validator("event_type")
+    @classmethod
+    def event_type_must_be_supported_for_manual_entry(cls, value: str) -> str:
+        value = value.strip().upper()
+        if value not in MANUAL_EVENT_TYPES:
+            allowed = ", ".join(sorted(MANUAL_EVENT_TYPES - {"MANUAL_ADJUSTMENT"}))
+            raise ValueError(f"Unsupported manual activity type; choose one of: {allowed}")
+        return value
 
     @field_validator("symbol")
     @classmethod
@@ -512,12 +545,6 @@ class ManualEventIn(BaseModel):
             raise ValueError("value must be a decimal number")
         return value
 
-    @field_validator("tags")
-    @classmethod
-    def tags_must_be_clean(cls, value: list[str]) -> list[str]:
-        return sorted({tag.strip() for tag in value if tag.strip()})
-
-
 def _apply_manual_valuation(session: Session, event: Event, currency: str, total_value: str | None) -> None:
     if not total_value:
         return
@@ -572,8 +599,12 @@ def create_manual_event(body: ManualEventIn, session: Session = Depends(get_sess
         account = session.get(Account, body.account_id)
         if account is None:
             raise HTTPException(404, "Account not found")
-        payload["source_label"] = account.name
         account_id = account.id
+
+    # A deposit's `to` value is the selected wallet. There is no separate
+    # destination field: every activity stores its destination in address_to.
+    if body.event_type == "DEPOSIT" and not payload.get("address_to"):
+        payload["address_to"] = account.address if account and account.address else account.name if account else None
 
     if body.event_subtype == "opening_balance":
         if account is None or account.connector_type != "manual":
@@ -590,7 +621,7 @@ def create_manual_event(body: ManualEventIn, session: Session = Depends(get_sess
         datetime.fromisoformat(payload["occurred_at"]),
         payload,
         source_timezone=body.source_timezone,
-        source_reference=body.evidence_reference,
+        source_reference=None,
     )
     has_manual_price = bool(body.eur_value or body.sek_value)
     price_currencies: tuple[str, ...] | None = () if has_manual_price else None
@@ -598,6 +629,12 @@ def create_manual_event(body: ManualEventIn, session: Session = Depends(get_sess
     event = ingest(session, _MANUAL, raw, account_id=account_id, price_currencies=price_currencies)
     if event is None:
         raise HTTPException(409, "This manual event was already recorded")
+
+    # The simplified Activity form has one explicit internal-transfer type.
+    # Persist that classification immediately so the manual record follows
+    # the same report/readiness path as a synchronized internal transfer.
+    if body.event_type == "TRANSFER":
+        event.internal_transfer = True
 
     if has_manual_price:
         _apply_manual_valuation(session, event, "EUR", body.eur_value)

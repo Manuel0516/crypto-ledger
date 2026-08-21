@@ -8,7 +8,8 @@ from app.connectors.lightning import LightningConnector
 from app.connectors.lightning.nwc import NWCConnector
 from app.connectors.monero import MoneroConnector
 from app.connectors.solana import SolanaAddressConnector
-from app.db.models import Account
+from app.core.settings import explorer_api_keys
+from app.db.models import Account, AppSettings
 from app.security.secrets import decrypt_config
 
 # Split out from sync.py so both sync.py and reconcile.py can build a
@@ -17,7 +18,7 @@ from app.security.secrets import decrypt_config
 # from reconcile.py, and reconcile.py from sync.py, would be circular).
 
 
-def build_connector(account: Account):
+def build_connector(account: Account, session=None):
     if account.connector_type == "bitcoin_address":
         address = account.address or ""
         if looks_like_extended_key(address):
@@ -25,6 +26,14 @@ def build_connector(account: Account):
         return BitcoinAddressConnector(address, account.name)
     if account.connector_type == "evm_address":
         config = decrypt_config(account.config_encrypted) if account.config_encrypted else {}
+        # New EVM sources inherit application-wide provider credentials. Keep
+        # the old per-account values as explicit overrides so existing
+        # connections continue to work after this settings change.
+        if session is not None:
+            global_keys = explorer_api_keys(session.get(AppSettings, 1))
+            config.setdefault("explorer_api_key", global_keys.get("etherscan"))
+            if (account.chain_network or "") == "bsc":
+                config.setdefault("bsc_trace_api_key", global_keys.get("bsc_trace"))
         return EVMAddressConnector(account.address or "", account.name, chain=account.chain_network or "ethereum", config=config)
     if account.connector_type == "solana_address":
         return SolanaAddressConnector(account.address, account.name)

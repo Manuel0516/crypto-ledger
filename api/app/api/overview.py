@@ -3,8 +3,10 @@ from __future__ import annotations
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.assets.registry import KNOWN_ASSETS
 from app.core.pricing.config import configured_price_provider
 from app.core.settings import get_or_create_settings, is_under_activity_threshold, minimum_activity_threshold
 from app.db.models import Account, AccountBalance, Asset, Event, Issue, SyncState, Valuation
@@ -36,6 +38,7 @@ def overview(session: Session = Depends(get_session)):
     )
     events = session.query(Event).options(selectinload(Event.valuations), selectinload(Event.fees)).all()
     assets_by_id: dict[int, Asset] = {asset.id: asset for asset in session.query(Asset).all()}
+    blocked_asset_ids = {asset.id for asset in assets_by_id.values() if asset.is_blocked}
 
     def is_nft(asset_id: int | None) -> bool:
         return bool(asset_id is not None and assets_by_id.get(asset_id) and assets_by_id[asset_id].asset_type == "NFT")
@@ -43,11 +46,36 @@ def overview(session: Session = Depends(get_session)):
     def event_has_nft(event: Event) -> bool:
         return is_nft(event.primary_asset_id) or is_nft(event.secondary_asset_id)
 
+    def is_hidden_token(asset_id: int) -> bool:
+        """Exclude unrecognized token spam from the portfolio presentation.
+
+        Explorer balance APIs can return arbitrary airdrop/spam contracts.
+        They remain canonical assets and their activity is never deleted, but
+        without a trusted symbol identity they must not inflate the Overview
+        or be accidentally priced by a ticker-only market-data lookup.
+        Known tokens remain eligible even when their network-specific contract
+        record has not yet been assigned a provider id.
+        """
+        asset = assets_by_id.get(asset_id)
+        return bool(
+            asset
+            and (
+                asset.is_blocked
+                or (asset.asset_type == "TOKEN" and asset.symbol.upper() not in KNOWN_ASSETS)
+            )
+        )
+
     # Live snapshots are authoritative for coins and tokens. NFT ownership is
     # deliberately kept from events because the explorer balance endpoints do
     # not expose a portable ERC-721/ERC-1155 inventory. A NULL account_id
     # (manual/legacy events) is always computed too.
-    visible_events = [event for event in events if not is_under_activity_threshold(event, settings)]
+    visible_events = [
+        event
+        for event in events
+        if not is_under_activity_threshold(event, settings)
+        and event.primary_asset_id not in blocked_asset_ids
+        and event.secondary_asset_id not in blocked_asset_ids
+    ]
     computed_events = [
         event
         for event in visible_events
@@ -129,7 +157,7 @@ def overview(session: Session = Depends(get_session)):
         for asset_id, amount in holdings.items()
         if amount != 0
         for asset in [assets_by_id.get(asset_id)]
-        if asset is not None and asset.coingecko_id
+        if asset is not None and asset.coingecko_id and not is_hidden_token(asset_id)
     }
     if provider_asset_ids:
         try:
@@ -188,7 +216,7 @@ def overview(session: Session = Depends(get_session)):
         # ledger balances available in Activity, reconciliation and reports,
         # but do not present them as portfolio assets or subtract them from
         # the headline total.
-        if amount <= 0 or is_small_holding(asset_id, amount):
+        if amount <= 0 or is_hidden_token(asset_id) or is_small_holding(asset_id, amount):
             continue
         item = holding_payload(asset_id, amount)
         totals["EUR"] += Decimal(str(item["value_eur"]))
@@ -204,7 +232,7 @@ def overview(session: Session = Depends(get_session)):
         balances = [
             holding_payload(asset_id, amount)
             for asset_id, amount in account_holdings.get(account.id, {}).items()
-            if amount > 0 and not is_small_holding(asset_id, amount)
+            if amount > 0 and not is_hidden_token(asset_id) and not is_small_holding(asset_id, amount)
         ]
         balances.sort(key=lambda item: (item["value_display"], item["symbol"]), reverse=True)
         account_payloads.append(
@@ -220,6 +248,17 @@ def overview(session: Session = Depends(get_session)):
             }
         )
 
+    blocked_event_ids = {
+        event.id
+        for event in events
+        if event.primary_asset_id in blocked_asset_ids or event.secondary_asset_id in blocked_asset_ids
+    }
+    open_issues_query = session.query(Issue).filter_by(resolved=False)
+    if blocked_event_ids:
+        open_issues_query = open_issues_query.filter(
+            or_(Issue.event_id.is_(None), ~Issue.event_id.in_(blocked_event_ids))
+        )
+
     bitget_sync = session.get(SyncState, "bitget")
     sync_times = [account.last_sync for account in accounts if account.last_sync is not None]
     if bitget_sync and bitget_sync.last_sync is not None:
@@ -232,6 +271,6 @@ def overview(session: Session = Depends(get_session)):
         "portfolio_display": round(float(totals[display_currency]), 2),
         "assets": assets,
         "accounts": account_payloads,
-        "issues": session.query(Issue).filter_by(resolved=False).count(),
+        "issues": open_issues_query.count(),
         "last_sync": last_sync.isoformat() if last_sync else None,
     }

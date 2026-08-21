@@ -36,6 +36,30 @@ def _ok(result):
 
 
 class BscTraceTests(unittest.TestCase):
+    def test_estimated_range_never_starts_at_latest_block(self) -> None:
+        with patch("app.connectors.evm.bsctrace._call", return_value=1000), patch.object(bsctrace, "_BLOCK_SECONDS", 3600):
+            from_block = bsctrace._estimated_from_block(
+                API_KEY,
+                datetime.now(timezone.utc).replace(year=2030),
+            )
+        self.assertEqual(from_block, 999)
+
+    def test_fetch_transfers_uses_a_numeric_increasing_block_range(self) -> None:
+        calls: list[dict] = []
+
+        def side_effect(url, json=None, **kwargs):
+            calls.append(json)
+            if json["method"] == "eth_blockNumber":
+                return _ok("0x100")
+            self.assertEqual(json["method"], "nr_getAssetTransfers")
+            params = json["params"][0]
+            self.assertLess(int(params["fromBlock"], 16), int(params["toBlock"], 16))
+            return _ok({"transfers": []})
+
+        with patch("app.connectors.evm.bsctrace.httpx.post", side_effect=side_effect):
+            self.assertEqual(list(bsctrace.fetch_transfers(ADDRESS, API_KEY, since=OCCURRED_AT)), [])
+        self.assertEqual(len(calls), 3)  # block estimate + one page for each direction
+
     def test_fetch_transfers_maps_all_indexed_categories_and_deduplicates_directions(self) -> None:
         timestamp = int(OCCURRED_AT.timestamp())
         rows = [

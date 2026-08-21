@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.ledger.service import refresh_valuations
 from app.core.reconciliation.matcher import find_transfer_candidate
-from app.db.models import Event, EventLink, Issue
+from app.db.models import Asset, Event, EventLink, Issue
 
 from .deps import get_session
 
@@ -21,7 +21,23 @@ _PRICING_ISSUE_TITLES = ("Unknown asset — no price source", "Missing price")
 
 @router.get("")
 def list_issues(session: Session = Depends(get_session)):
+    secondary_asset = aliased(Asset)
+    blocked_event_ids = {
+        event_id
+        for (event_id,) in session.query(Event.id)
+        .join(Asset, Event.primary_asset_id == Asset.id)
+        .filter(Asset.is_blocked)
+        .all()
+    }
+    blocked_event_ids.update(
+        event_id
+        for (event_id,) in session.query(Event.id)
+        .join(secondary_asset, Event.secondary_asset_id == secondary_asset.id)
+        .filter(secondary_asset.is_blocked)
+        .all()
+    )
     issues = session.query(Issue).filter_by(resolved=False).order_by(Issue.severity, Issue.id).all()
+    issues = [issue for issue in issues if issue.event_id not in blocked_event_ids]
     return [
         {
             "id": i.id,
@@ -29,8 +45,9 @@ def list_issues(session: Session = Depends(get_session)):
             "severity": i.severity,
             "title": i.title,
             "detail": i.detail,
-            # The frontend offers a one-click "Link accounts" action only for
-            # this issue type — everything else is just dismissed as reviewed.
+            # Kept as compatibility metadata for older clients. The current
+            # UI treats transfer issues like every other reviewable issue and
+            # does not offer reconciliation actions.
             "linkable": i.title == _TRANSFER_ISSUE_TITLE,
             "markable": i.title == _TRANSFER_ISSUE_TITLE,
         }

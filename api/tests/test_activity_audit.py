@@ -12,6 +12,8 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from fastapi import HTTPException
+
 from app.api.events import EventLinkIn, OverrideIn, RestoreIn, create_event_link, get_event, list_events, override_event, restore_event_value
 from app.connectors.base import RawRecord
 from app.connectors.manual import ManualConnector
@@ -69,14 +71,13 @@ class ActivityAuditTests(unittest.TestCase):
         )
         self.assertEqual(page["total"], 1)
         self.assertEqual(page["items"][0]["event_type"], "UNKNOWN")
-        self.assertEqual(page["items"][0]["tags"], ["2026", "work"])
+        self.assertNotIn("tags", page["items"][0])
 
         before_payload = event.raw_event.payload_json
-        override_event(event.id, OverrideIn(field="description", value="Corrected text", reason="Typo"), self.session)
-        restored = restore_event_value(event.id, "description", RestoreIn(), self.session)
-        self.assertFalse(restored["modified"])
+        with self.assertRaises(HTTPException) as error:
+            override_event(event.id, OverrideIn(field="description", value="Corrected text", reason="Typo"), self.session)
+        self.assertEqual(error.exception.status_code, 400)
         detail = get_event(event.id, self.session)
-        self.assertEqual(detail["event"]["description"], "Invoice settlement")
         self.assertEqual(detail["raw"]["payload"]["description"], "Invoice settlement")
         self.assertEqual(before_payload, event.raw_event.payload_json)
 

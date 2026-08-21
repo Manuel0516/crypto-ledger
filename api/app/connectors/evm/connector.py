@@ -29,6 +29,17 @@ CHAINS: dict[str, tuple[str, str]] = {
     "avalanche": ("https://api.routescan.io/v2/network/mainnet/evm/43114/etherscan/api", "Avalanche"),
 }
 
+# Contract addresses of known liquidity-position managers, keyed by lowercase
+# address. A wallet receiving a fresh position NFT from one of these is a
+# liquidity deposit, not a collectible — without this, the generic NFT path
+# below would file it as NFT_MINT. Verified against real PancakeSwap V3
+# activity — the same CREATE2-deployed address across BSC, Ethereum,
+# Arbitrum, and Base. Extend this dict as other protocols are confirmed
+# rather than guessing at addresses that haven't been observed on-chain.
+_LP_POSITION_MANAGERS: dict[str, str] = {
+    "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364": "PancakeSwap V3",
+}
+
 CHAIN_IDS: dict[str, str] = {
     "ethereum": "1",
     "polygon": "137",
@@ -237,9 +248,15 @@ class EVMAddressConnector:
         base, network, _chain_id, _api_key, native_symbol = self._network_config()
         if not _ETH_ADDRESS.fullmatch(self.address):
             raise ConnectorUnavailable(f"Invalid EVM address '{self.address}'. Use a 0x-prefixed 40-hex-character address.")
+        namespace = f"{self.source_id}:{self.chain}:{self.address}"
+        raw_entries = self._fetch_raw_payloads(base, network, native_symbol, since)
+        for payload, external_id in _merge_swap_legs(_merge_lp_deposits(raw_entries, self.address), self.address):
+            yield RawRecord(namespace, external_id, _timestamp(payload["timeStamp"]), payload)
+
+    def _fetch_raw_payloads(self, base: str, network: str, native_symbol: str, since: datetime | None) -> Iterable[tuple[dict, str]]:
+        """Yield (payload, external_id) pairs exactly as before swap merging."""
         trace_key = self._bsc_trace_api_key()
         if self.chain == "bsc" and trace_key:
-            namespace = f"{self.source_id}:{self.chain}:{self.address}"
             for tx in bsctrace.fetch_transfers(self.address, trace_key, since):
                 payload = {**tx, "_network": network, "_native_symbol": native_symbol}
                 if tx["_kind"] == "contract_call":
@@ -248,7 +265,7 @@ class EVMAddressConnector:
                     external_id = f"{tx['hash']}-nft1155-{tx.get('contractAddress', '')}-{tx.get('tokenID', '')}-{tx.get('_item_index', '0')}"
                 else:
                     external_id = f"{tx['hash']}-{tx['_kind']}-{tx.get('contractAddress', '')}-{tx.get('tokenID', tx.get('logIndex', '0'))}"
-                yield RawRecord(namespace, external_id, _timestamp(tx["timeStamp"]), payload)
+                yield payload, external_id
             return
         if self._bsc_public_rpc_mode():
             # Only history for contracts the user explicitly named is
@@ -256,13 +273,11 @@ class EVMAddressConnector:
             # any undeclared token are permanently invisible to this path,
             # not a transient failure, so an account with no configured
             # contracts correctly imports zero events every sync.
-            namespace = f"{self.source_id}:{self.chain}:{self.address}"
             for tx in bsc_rpc.fetch_token_transfers(self.address, self._bsc_token_contracts(), since):
                 payload = {**tx, "_kind": "token", "_network": network, "_native_symbol": native_symbol}
                 external_id = f"{tx['hash']}-token-{tx.get('contractAddress', '')}-{tx.get('logIndex', '0')}"
-                yield RawRecord(namespace, external_id, _timestamp(tx["timeStamp"]), payload)
+                yield payload, external_id
             return
-        namespace = f"{self.source_id}:{self.chain}:{self.address}"
         pages = self.BACKFILL_PAGES if since is None else 1
 
         for tx in self._paged(base, "txlist", pages):
@@ -274,22 +289,22 @@ class EVMAddressConnector:
                 continue
             kind = "native" if has_value else "contract_call"
             payload = {**tx, "_kind": kind, "_network": network, "_native_symbol": native_symbol}
-            yield RawRecord(namespace, tx["hash"], _timestamp(tx["timeStamp"]), payload)
+            yield payload, tx["hash"]
 
         for tx in self._paged_optional(base, "tokentx", pages):
             payload = {**tx, "_kind": "token", "_network": network, "_native_symbol": native_symbol}
             external_id = f"{tx['hash']}-token-{tx.get('contractAddress', '')}-{tx.get('logIndex', '0')}"
-            yield RawRecord(namespace, external_id, _timestamp(tx["timeStamp"]), payload)
+            yield payload, external_id
 
         for tx in self._paged_optional(base, "tokennfttx", pages):
             payload = {**tx, "_kind": "nft721", "_network": network, "_native_symbol": native_symbol}
             external_id = f"{tx['hash']}-nft721-{tx.get('contractAddress', '')}-{tx.get('tokenID', '')}"
-            yield RawRecord(namespace, external_id, _timestamp(tx["timeStamp"]), payload)
+            yield payload, external_id
 
         for tx in self._paged_optional(base, "token1155tx", pages):
             payload = {**tx, "_kind": "nft1155", "_network": network, "_native_symbol": native_symbol}
             external_id = f"{tx['hash']}-nft1155-{tx.get('contractAddress', '')}-{tx.get('tokenID', '')}"
-            yield RawRecord(namespace, external_id, _timestamp(tx["timeStamp"]), payload)
+            yield payload, external_id
 
     def fetch_balances(self) -> Iterable[Balance]:
         base, network, _chain_id, _api_key, native_symbol = self._network_config()
@@ -392,8 +407,7 @@ class EVMAddressConnector:
                 asset_symbol=native_symbol,
                 asset_network=payload["_network"],
                 amount="0",
-                source_label=self.account_label,
-                counterparty=payload.get("to"),
+                account_name=self.account_label,
                 address_from=payload.get("from"),
                 address_to=payload.get("to"),
                 notes=f"Contract call, not decoded · {payload['hash'][:12]}…",
@@ -421,8 +435,7 @@ class EVMAddressConnector:
                 asset_symbol=native_symbol,
                 asset_network=payload["_network"],
                 amount=f"{amount:.18f}",
-                source_label=self.account_label,
-                counterparty=payload.get("from") if is_incoming else payload.get("to"),
+                account_name=self.account_label,
                 address_from=payload.get("from"),
                 address_to=payload.get("to"),
                 notes=f"On-chain tx {payload['hash'][:12]}…",
@@ -452,8 +465,7 @@ class EVMAddressConnector:
                 asset_contract=payload.get("contractAddress"),
                 asset_type="TOKEN",
                 amount=f"{amount:.{min(decimals, 18)}f}",
-                source_label=self.account_label,
-                counterparty=payload.get("from") if is_incoming else payload.get("to"),
+                account_name=self.account_label,
                 address_from=payload.get("from"),
                 address_to=payload.get("to"),
                 notes=f"{payload.get('tokenName') or 'Token'} transfer {payload['hash'][:12]}…",
@@ -463,6 +475,67 @@ class EVMAddressConnector:
                 block_hash=payload.get("blockHash"),
                 log_index=_maybe_int(payload.get("logIndex")),
                 contract_address=payload.get("contractAddress"),
+            )
+
+        if kind == "swap":
+            fees: list[NormalizedFee] = []
+            if payload.get("_gas_eth"):
+                fees.append(NormalizedFee(fee_type="GAS_FEE", asset_symbol=native_symbol, amount=payload["_gas_eth"]))
+            return NormalizedEvent(
+                event_type="SWAP",
+                event_subtype="dex_swap",
+                direction="-",
+                status="COMPLETE",
+                occurred_at=occurred_at,
+                original_timestamp=occurred_at.isoformat(),
+                asset_symbol=payload["_out_symbol"],
+                asset_network=payload["_network"],
+                asset_contract=payload.get("_out_contract"),
+                asset_type=payload["_out_asset_type"],
+                amount=payload["_out_amount"],
+                account_name=self.account_label,
+                address_from=payload.get("from"),
+                address_to=payload.get("to"),
+                notes=f"On-chain swap {payload['hash'][:12]}…",
+                fees=fees,
+                secondary_asset_symbol=payload["_in_symbol"],
+                secondary_asset_network=payload["_network"],
+                secondary_amount=payload["_in_amount"],
+                tx_hash=payload.get("hash"),
+                block_height=_maybe_int(payload.get("blockNumber")),
+                block_hash=payload.get("blockHash"),
+                contract_address=payload.get("to"),
+            )
+
+        if kind == "lp_deposit":
+            fees: list[NormalizedFee] = []
+            if payload.get("_gas_eth"):
+                fees.append(NormalizedFee(fee_type="GAS_FEE", asset_symbol=native_symbol, amount=payload["_gas_eth"]))
+            token_id = payload.get("_position_token_id") or "?"
+            return NormalizedEvent(
+                event_type="LP_DEPOSIT",
+                event_subtype="dex_lp_deposit",
+                direction="-",
+                status="COMPLETE",
+                occurred_at=occurred_at,
+                original_timestamp=occurred_at.isoformat(),
+                asset_symbol=payload["_out_symbol"],
+                asset_network=payload["_network"],
+                asset_contract=payload.get("_out_contract"),
+                asset_type=payload["_out_asset_type"],
+                amount=payload["_out_amount"],
+                account_name=self.account_label,
+                address_from=payload.get("from"),
+                address_to=payload.get("_position_contract"),
+                notes=f"{payload['_protocol']} liquidity position #{token_id} · {payload['hash'][:12]}…",
+                fees=fees,
+                secondary_asset_symbol=payload.get("_in_symbol"),
+                secondary_asset_network=payload["_network"] if payload.get("_in_symbol") else None,
+                secondary_amount=payload.get("_in_amount"),
+                tx_hash=payload.get("hash"),
+                block_height=_maybe_int(payload.get("blockNumber")),
+                block_hash=payload.get("blockHash"),
+                contract_address=payload.get("_position_contract"),
             )
 
         # nft721 / nft1155
@@ -488,8 +561,7 @@ class EVMAddressConnector:
             asset_contract=payload.get("contractAddress"),
             asset_type="NFT",
             amount=str(quantity),
-            source_label=self.account_label,
-            counterparty=payload.get("from") if is_incoming else payload.get("to"),
+            account_name=self.account_label,
             address_from=payload.get("from"),
             address_to=payload.get("to"),
             notes=f"{standard} {payload.get('tokenName') or 'NFT'} #{token_id} · {payload['hash'][:12]}…",
@@ -500,6 +572,154 @@ class EVMAddressConnector:
             log_index=_maybe_int(payload.get("logIndex")),
             contract_address=payload.get("contractAddress"),
         )
+
+
+def _leg_identity(payload: dict) -> tuple[str, str]:
+    if payload["_kind"] == "token":
+        return str(payload.get("tokenSymbol") or "UNKNOWN").upper(), str(payload.get("contractAddress") or "").lower()
+    return str(payload.get("_native_symbol") or "").upper(), ""
+
+
+def _leg_measure(payload: dict) -> tuple[str, str, str | None, str]:
+    """(symbol, amount, contract, asset_type) for a native or token leg."""
+    if payload["_kind"] == "token":
+        decimals = int(payload.get("tokenDecimal") or 18)
+        amount = int(payload["value"]) / (10**decimals)
+        return payload.get("tokenSymbol") or "UNKNOWN", f"{amount:.{min(decimals, 18)}f}", payload.get("contractAddress"), "TOKEN"
+    amount = int(payload["value"]) / 1e18
+    return payload.get("_native_symbol") or "", f"{amount:.18f}", None, "COIN"
+
+
+def _leg_gas_fee(leg: dict, group: list[tuple[dict, str]]) -> float | None:
+    """ETH-denominated gas cost to attribute to a merged event, mirroring the
+    same one-fee-per-wallet-leg convention used everywhere else in this file
+    (see bsctrace.py's ``_fee_for_wallet``) so a merged event never double- or
+    zero-counts the transaction's gas."""
+    if leg["_kind"] == "native" and not leg.get("_internal"):
+        return int(leg["gasUsed"]) * int(leg["gasPrice"]) / 1e18
+    if leg.get("_fee_for_wallet"):
+        return int(leg.get("gasUsed") or 0) * int(leg.get("gasPrice") or 0) / 1e18
+    gas_leg = next((p for p, _ in group if p["_kind"] == "contract_call"), None)
+    if gas_leg is not None:
+        return int(gas_leg["gasUsed"]) * int(gas_leg["gasPrice"]) / 1e18
+    return None
+
+
+def _merge_lp_deposits(entries: Iterable[tuple[dict, str]], address: str) -> Iterable[tuple[dict, str]]:
+    """Recognize minting a liquidity position (plan §15's liquidity case) as
+    one LP_DEPOSIT event instead of a bare NFT_MINT plus the token legs that
+    funded it. A position-manager mint transaction is a fresh position NFT
+    (from the zero address) at a known ``_LP_POSITION_MANAGERS`` contract,
+    alongside one or two native/token legs the wallet itself sent in the same
+    transaction — those are the deposited amounts. Anything else (an unknown
+    contract, zero or more than two funding legs) is left as individual
+    transfers: this only recognizes the unambiguous case, never guesses.
+    """
+    address = address.lower()
+    buffered = list(entries)
+    by_hash: dict[str, list[tuple[dict, str]]] = {}
+    for payload, external_id in buffered:
+        by_hash.setdefault(payload["hash"], []).append((payload, external_id))
+
+    merged_hashes: set[str] = set()
+    for tx_hash, group in by_hash.items():
+        mint = next(
+            (
+                p
+                for p, _ in group
+                if p["_kind"] in ("nft721", "nft1155")
+                and p.get("from", "").lower() == _ZERO_ADDRESS
+                and p.get("contractAddress", "").lower() in _LP_POSITION_MANAGERS
+            ),
+            None,
+        )
+        if mint is None:
+            continue
+        funding_legs = [p for p, _ in group if p["_kind"] in ("native", "token") and p.get("from", "").lower() == address]
+        if not 1 <= len(funding_legs) <= 2:
+            continue
+
+        primary, secondary = funding_legs[0], funding_legs[1] if len(funding_legs) == 2 else None
+        gas_eth = _leg_gas_fee(primary, group) or (secondary and _leg_gas_fee(secondary, group))
+        out_symbol, out_amount, out_contract, out_type = _leg_measure(primary)
+        lp_payload = {
+            **primary,
+            "_kind": "lp_deposit",
+            "_protocol": _LP_POSITION_MANAGERS[mint["contractAddress"].lower()],
+            "_position_token_id": mint.get("tokenID", ""),
+            "_position_contract": mint.get("contractAddress"),
+            "_out_symbol": out_symbol,
+            "_out_amount": out_amount,
+            "_out_contract": out_contract,
+            "_out_asset_type": out_type,
+            "_gas_eth": f"{gas_eth:.18f}" if gas_eth else None,
+        }
+        if secondary is not None:
+            in_symbol, in_amount, _c, _t = _leg_measure(secondary)
+            lp_payload["_in_symbol"] = in_symbol
+            lp_payload["_in_amount"] = in_amount
+        merged_hashes.add(tx_hash)
+        yield lp_payload, f"{tx_hash}-lp-deposit"
+
+    for payload, external_id in buffered:
+        if payload["hash"] in merged_hashes and (
+            payload["_kind"] in ("native", "token", "contract_call")
+            or (payload["_kind"] in ("nft721", "nft1155") and payload.get("contractAddress", "").lower() in _LP_POSITION_MANAGERS)
+        ):
+            continue
+        yield payload, external_id
+
+
+def _merge_swap_legs(entries: Iterable[tuple[dict, str]], address: str) -> Iterable[tuple[dict, str]]:
+    """Fold an exact two-leg, opposite-direction, different-asset transaction
+    into one swap payload, mirroring how a swap is already a single event
+    with two legs everywhere else in this app (plan §15: "BTC -0.001 / ETH
+    +0.034"). A DEX swap on a single tracked address otherwise arrives as two
+    independent transfers (the sent leg, the received leg) that would each
+    need manual merging into a swap after the fact. Only the unambiguous
+    two-leg case is recognized here — a multi-hop route or a staking/
+    liquidity interaction has a different leg count and is left as
+    individual transfers rather than guessed at.
+    """
+    address = address.lower()
+    buffered = list(entries)
+    by_hash: dict[str, list[tuple[dict, str]]] = {}
+    for payload, external_id in buffered:
+        by_hash.setdefault(payload["hash"], []).append((payload, external_id))
+
+    merged_hashes: set[str] = set()
+    for tx_hash, group in by_hash.items():
+        legs = [p for p, _ in group if p["_kind"] in ("native", "token") and not p.get("_internal")]
+        if len(legs) != 2:
+            continue
+        first, second = legs
+        first_in = first.get("to", "").lower() == address
+        second_in = second.get("to", "").lower() == address
+        if first_in == second_in or _leg_identity(first) == _leg_identity(second):
+            continue
+        outgoing, incoming = (second, first) if first_in else (first, second)
+
+        gas_eth = _leg_gas_fee(outgoing, group)
+        out_symbol, out_amount, out_contract, out_type = _leg_measure(outgoing)
+        in_symbol, in_amount, _in_contract, _in_type = _leg_measure(incoming)
+        swap_payload = {
+            **outgoing,
+            "_kind": "swap",
+            "_out_symbol": out_symbol,
+            "_out_amount": out_amount,
+            "_out_contract": out_contract,
+            "_out_asset_type": out_type,
+            "_in_symbol": in_symbol,
+            "_in_amount": in_amount,
+            "_gas_eth": f"{gas_eth:.18f}" if gas_eth is not None else None,
+        }
+        merged_hashes.add(tx_hash)
+        yield swap_payload, f"{tx_hash}-swap"
+
+    for payload, external_id in buffered:
+        if payload["hash"] in merged_hashes and payload["_kind"] in ("native", "token", "contract_call"):
+            continue
+        yield payload, external_id
 
 
 def _timestamp(value: str) -> datetime:

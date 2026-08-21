@@ -21,9 +21,6 @@ FIELDNAMES = [
     "amount",
     "secondary_asset",
     "secondary_amount",
-    "source_label",
-    "destination_label",
-    "counterparty",
     "address_from",
     "address_to",
     "fee_asset",
@@ -45,16 +42,11 @@ FIELDNAMES = [
     "source_id",
     "source_timezone",
     "imported_at",
-    "description",
-    "merchant",
-    "tags",
-    "evidence_reference",
     "linked_event_ids",
     "valuation_requested_timestamp",
     "valuation_observation_timestamp",
     "valuation_fetched_at",
     "override_history",
-    "notes",
 ]
 
 
@@ -87,9 +79,6 @@ def export_ledger_csv(session: Session) -> str:
                 "amount": values["primary_amount"],
                 "secondary_asset": event.secondary_asset.symbol if event.secondary_asset else "",
                 "secondary_amount": values["secondary_amount"] or "",
-                "source_label": values["source_label"],
-                "destination_label": values["destination_label"] or "",
-                "counterparty": values["counterparty"] or "",
                 "address_from": values["address_from"] or "",
                 "address_to": values["address_to"] or "",
                 "fee_asset": fee_assets,
@@ -111,10 +100,6 @@ def export_ledger_csv(session: Session) -> str:
                 "source_id": event.raw_event.source_id if event.raw_event else "",
                 "source_timezone": event.source_timezone or "",
                 "imported_at": event.raw_event.received_at.isoformat() if event.raw_event else event.created_at.isoformat(),
-                "description": values.get("description") or "",
-                "merchant": values.get("merchant") or "",
-                "tags": "; ".join(json.loads(values.get("tags_json") or "[]")),
-                "evidence_reference": values.get("evidence_reference") or "",
                 "linked_event_ids": "; ".join(str(event_id) for event_id in linked_event_ids),
                 "valuation_requested_timestamp": valuation_provenance.requested_timestamp.isoformat() if valuation_provenance else "",
                 "valuation_observation_timestamp": valuation_provenance.observation_timestamp.isoformat() if valuation_provenance else "",
@@ -123,7 +108,6 @@ def export_ledger_csv(session: Session) -> str:
                     {"field": override.field, "old": override.old_value, "new": override.new_value, "at": override.changed_at.isoformat(), "reason": override.reason}
                     for override in sorted(event.overrides, key=lambda override: override.id or 0)
                 ], ensure_ascii=False),
-                "notes": values["notes"] or "",
             }
         )
     return out.getvalue()

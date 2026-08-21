@@ -13,10 +13,11 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.api.settings import SecretConfirmation, SettingsUpdate, delete_secret, list_secrets, reveal_secret, store_provider_key, ProviderKeyInput, update_settings
+from app.api.settings import SecretConfirmation, SettingsUpdate, delete_secret, list_secrets, reveal_secret, store_explorer_key, store_provider_key, ProviderKeyInput, update_settings
 from app.api.overview import overview
+from app.core.ledger.connectors import build_connector
 from app.core.settings import DEFAULT_VALUATION_CURRENCIES, get_or_create_settings, valuation_currencies
-from app.db.models import Asset, Base, Event, Valuation
+from app.db.models import Account, Asset, Base, Event, Valuation
 
 
 class SettingsTests(unittest.TestCase):
@@ -82,7 +83,7 @@ class SettingsTests(unittest.TestCase):
             occurred_at=occurred_at,
             primary_asset_id=asset.id,
             primary_amount="2",
-            source_label="Test source",
+            address_from="Test source",
             provenance="manual",
             normalizer_version="test",
         )
@@ -131,6 +132,29 @@ class SettingsTests(unittest.TestCase):
             )
             self.assertTrue(delete_secret("price-provider-key", SecretConfirmation(confirmed=True), self.session)["deleted"])
             self.assertFalse(next(item for item in list_secrets(self.session) if item["id"] == "price-provider-key")["configured"])
+
+    def test_explorer_key_is_application_wide_and_inherited_by_evm_sources(self) -> None:
+        with patch.dict("os.environ", {"APP_SECRET_KEY": Fernet.generate_key().decode()}, clear=False):
+            store_explorer_key("etherscan", ProviderKeyInput(value="shared-explorer-key"), self.session)
+            account = Account(
+                name="Ethereum wallet",
+                kind="wallet",
+                connector_type="evm_address",
+                chain_network="ethereum",
+                address="0x0000000000000000000000000000000000000001",
+                status="not_configured",
+            )
+            self.session.add(account)
+            self.session.commit()
+
+            connector = build_connector(account, self.session)
+            self.assertEqual(connector.config.get("explorer_api_key"), "shared-explorer-key")
+            configured = next(item for item in list_secrets(self.session) if item["id"] == "explorer:etherscan")
+            self.assertTrue(configured["configured"])
+            self.assertEqual(
+                reveal_secret("explorer:etherscan", SecretConfirmation(confirmed=True), self.session)["value"],
+                "shared-explorer-key",
+            )
 
 
 if __name__ == "__main__":

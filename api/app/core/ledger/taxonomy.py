@@ -18,7 +18,25 @@ CANONICAL_EVENT_TYPES = frozenset(
         "NFT_MINT", "NFT_BUY", "NFT_SELL", "NFT_TRANSFER", "LP_DEPOSIT", "LP_WITHDRAWAL", "LP_REWARD",
         "BRIDGE_OUT", "BRIDGE_IN", "LIGHTNING_SEND", "LIGHTNING_RECEIVE", "LIGHTNING_CHANNEL_OPEN",
         "LIGHTNING_CHANNEL_CLOSE", "LIGHTNING_FEE", "TOKEN_MINT", "TOKEN_BURN", "GIFT_SENT",
-        "GIFT_RECEIVED", "DONATION", "LOST", "STOLEN", "MANUAL_ADJUSTMENT", "UNKNOWN",
+        "GIFT_RECEIVED", "DONATION", "LIQUIDITY", "LOST", "STOLEN", "MANUAL_ADJUSTMENT", "UNKNOWN",
+    }
+)
+
+# Manual entry is intentionally narrower than the canonical import taxonomy.
+# Automatic connectors may still emit the full set above; the Activity form
+# only offers these user-facing choices.
+MANUAL_EVENT_TYPES = frozenset(
+    {
+        "DEPOSIT",
+        "WITHDRAWAL",
+        "TRANSFER",
+        "PAYMENT",
+        "DONATION",
+        "SWAP",
+        "MINING_REWARD",
+        "STAKING_REWARD",
+        "LIQUIDITY",
+        "MANUAL_ADJUSTMENT",  # opening balances
     }
 )
 

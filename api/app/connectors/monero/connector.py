@@ -90,7 +90,7 @@ class MoneroConnector:
             asset_symbol="XMR",
             asset_network="Monero",
             amount=f"{amount:.12f}",
-            source_label=self.account_label,
+            account_name=self.account_label,
             address_from=address_from,
             address_to=address_to,
             notes=f"Monero tx {transfer['txid'][:12]}…",

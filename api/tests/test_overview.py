@@ -51,7 +51,7 @@ class OverviewTests(unittest.TestCase):
             occurred_at=OCCURRED_AT,
             primary_asset_id=asset.id,
             primary_amount=amount,
-            source_label="Test",
+            address_from="Test",
             provenance="manual",
             normalizer_version="test",
         )
@@ -116,6 +116,26 @@ class OverviewTests(unittest.TestCase):
 
         self.assertEqual(result["assets"], [])
         self.assertEqual(result["portfolio_eur"], 0.0)
+
+    def test_unrecognized_token_spam_is_hidden_but_not_deleted(self) -> None:
+        account = self._account(live=True)
+        spam = Asset(
+            symbol="FREEAIR",
+            name="Free Airdrop",
+            asset_type="TOKEN",
+            network="BNB Smart Chain",
+            contract_address="0xspam",
+        )
+        self.session.add(spam)
+        self.session.flush()
+        self.session.add(AccountBalance(account_id=account.id, asset_id=spam.id, amount="1000000"))
+        self.session.commit()
+
+        result = overview(self.session)
+
+        self.assertEqual(result["assets"], [])
+        self.assertEqual(result["accounts"][0]["balances"], [])
+        self.assertIsNotNone(self.session.get(Asset, spam.id))
 
     def test_live_and_computed_accounts_do_not_double_count_the_same_asset(self) -> None:
         live_account = self._account(live=True)
@@ -202,7 +222,7 @@ class OverviewTests(unittest.TestCase):
                 occurred_at=OCCURRED_AT,
                 primary_asset_id=asset.id,
                 primary_amount=amount,
-                source_label="Test",
+                address_from="Test",
                 provenance="manual",
                 normalizer_version="test",
             )
@@ -229,7 +249,7 @@ class OverviewTests(unittest.TestCase):
             occurred_at=OCCURRED_AT,
             primary_asset_id=asset.id,
             primary_amount="0.003",
-            source_label="Test",
+                address_from="Test",
             provenance="manual",
             normalizer_version="test",
         )
@@ -260,7 +280,7 @@ class OverviewTests(unittest.TestCase):
             occurred_at=OCCURRED_AT,
             primary_asset_id=asset.id,
             primary_amount="0.001",
-            source_label="Test",
+                address_from="Test",
             provenance="manual",
             normalizer_version="test",
         )

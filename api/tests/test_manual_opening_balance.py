@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -47,7 +48,7 @@ class ManualOpeningBalanceTests(unittest.TestCase):
             )
             create_manual_event(
                 ManualEventIn(
-                    event_type="SEND",
+                    event_type="WITHDRAWAL",
                     symbol="XMR",
                     amount="-2.5",
                     occurred_at=datetime(2026, 8, 22, tzinfo=timezone.utc).isoformat(),
@@ -90,7 +91,15 @@ class ManualOpeningBalanceTests(unittest.TestCase):
             with self.assertRaisesRegex(HTTPException, "already has an opening balance"):
                 create_manual_event(body, self.session)
 
+    def test_manual_entry_rejects_legacy_activity_types(self) -> None:
+        with self.assertRaises(ValidationError):
+            ManualEventIn(
+                event_type="STOLEN",
+                symbol="BTC",
+                amount="1",
+                occurred_at=OCCURRED_AT.isoformat(),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
-

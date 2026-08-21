@@ -11,7 +11,15 @@ from app.core.pricing.config import configured_price_provider
 from ..common import EffectiveEvent
 
 from ..adapter import AcquisitionRow, AssetSummaryRow, GainLossRow, IncomeRow, TaxCalculationResult, TaxReadinessResult
-from ..common import build_readiness, build_supplementary_rows, classify_moves, load_events_through, uncovered_type_warning
+from ..common import (
+    SCHEDULE_ONLY_TYPES,
+    build_readiness,
+    build_supplementary_rows,
+    classify_moves,
+    is_liquidity_reward,
+    load_events_through,
+    uncovered_type_warning,
+)
 from ..format import format_money, format_quantity
 
 # Acquisitions: establish or add to the running average-cost position.
@@ -80,18 +88,13 @@ class SwedenAdapter:
 
     def check_readiness(self, session: Session, tax_year: int) -> TaxReadinessResult:
         events = load_events_through(session, tax_year)
-        _, ambiguous = classify_moves(events)
-        return build_readiness(self.country_code, tax_year, session, events, self.default_currency, ambiguous)
+        return build_readiness(self.country_code, tax_year, session, events, self.default_currency)
 
     def calculate(
         self, session: Session, tax_year: int, method: str, taxpayer_name: str, work_dir: Path
     ) -> TaxCalculationResult:
         events = load_events_through(session, tax_year)
-        pairs, ambiguous = classify_moves(events)
-        if ambiguous:
-            raise ValueError(
-                f"{len(ambiguous)} transfer(s) aren't linked or classified — resolve the readiness issues first"
-            )
+        pairs, _ = classify_moves(events)
         skip_ids = {e.id for pair in pairs for e in (pair.withdrawal, pair.deposit)}
 
         positions: dict[str, _Position] = {}
@@ -103,6 +106,19 @@ class SwedenAdapter:
         acquired: dict[str, Decimal] = {}
         disposed: dict[str, Decimal] = {}
 
+        missing_price_events = [
+            event
+            for event in events
+            if event.occurred_at.year == tax_year
+            and event.primary_asset.asset_type != "FIAT"
+            and not any(v.quote_currency == self.default_currency for v in event.valuations)
+        ]
+        if missing_price_events:
+            warnings.append(
+                f"{len(missing_price_events)} activity/activities have no SEK valuation and remain schedule-only; "
+                "affected tax totals exclude them rather than estimating a value."
+            )
+
         for event in events:
             if event.id in skip_ids:
                 continue  # internal transfer: moving wallets isn't a disposal under Swedish rules
@@ -110,19 +126,29 @@ class SwedenAdapter:
             pos = positions.setdefault(asset, _Position())
             amount = Decimal(event.primary_amount)
             year = event.occurred_at.year
+            tax_event_type = "LP_REWARD" if is_liquidity_reward(event) else event.event_type
 
-            if event.event_type in _IN_TYPES:
+            if event.event_type == "LIQUIDITY" and not is_liquidity_reward(event):
+                continue
+            if tax_event_type == "SWAP" and (event.secondary_asset is None or not event.secondary_amount):
+                warnings.append(f"Activity #{event.id} is an incomplete swap and was omitted from Swedish tax totals.")
+                continue
+            if tax_event_type in _IN_TYPES | _OUT_TYPES or tax_event_type == "SWAP":
+                if event.primary_asset.asset_type != "FIAT" and not any(v.quote_currency == self.default_currency for v in event.valuations):
+                    continue
+
+            if tax_event_type in _IN_TYPES:
                 value = _sek_value(event)
                 pos.acquire(amount, value)
                 acquired[asset] = acquired.get(asset, Decimal(0)) + amount
-                category = _INCOME_CATEGORY.get(event.event_type)
+                category = _INCOME_CATEGORY.get(tax_event_type)
                 if category and year == tax_year:
                     income_rows.append(
                         IncomeRow(year=year, asset=asset, category=category, quantity=format_quantity(amount), fiat_value=format_money(value), event_ids=[event.id])
                     )
                 if year == tax_year:
                     acquisition_rows.append(
-                        AcquisitionRow(year=year, asset=asset, category=event.event_type, quantity=format_quantity(amount), cost_basis=format_money(value), event_ids=[event.id])
+                        AcquisitionRow(year=year, asset=asset, category=tax_event_type, quantity=format_quantity(amount), cost_basis=format_money(value), event_ids=[event.id])
                     )
             elif event.event_type == "SWAP":
                 proceeds = _sek_value(event)
@@ -137,14 +163,14 @@ class SwedenAdapter:
                     sec_pos = positions.setdefault(sec_asset, _Position())
                     sec_pos.acquire(Decimal(event.secondary_amount), proceeds)
                     acquired[sec_asset] = acquired.get(sec_asset, Decimal(0)) + Decimal(event.secondary_amount)
-            elif event.event_type in _OUT_TYPES:
-                proceeds = Decimal(0) if event.event_type in ("LOST", "STOLEN") else _sek_value(event)
+            elif tax_event_type in _OUT_TYPES:
+                proceeds = Decimal(0) if tax_event_type in ("LOST", "STOLEN") else _sek_value(event)
                 if pos.quantity < amount:
                     underflow_assets.add(asset)
                 basis = pos.dispose(amount)
                 disposed[asset] = disposed.get(asset, Decimal(0)) + amount
                 if year == tax_year:
-                    gain_rows.append(GainLossRow(year=year, asset=asset, category=event.event_type, term=None, quantity=format_quantity(amount), proceeds=format_money(proceeds), cost_basis=format_money(basis), gain_loss=format_money(proceeds - basis), event_ids=[event.id]))
+                    gain_rows.append(GainLossRow(year=year, asset=asset, category=tax_event_type, term=None, quantity=format_quantity(amount), proceeds=format_money(proceeds), cost_basis=format_money(basis), gain_loss=format_money(proceeds - basis), event_ids=[event.id]))
             # Everything else (fee-only entries, UNKNOWN, TRANSFER without a
             # confirmed internal-transfer link would already be blocked above)
             # is left out of the cost-basis walk entirely.
@@ -231,4 +257,6 @@ class SwedenAdapter:
             event_schedule_rows=event_schedule_rows,
             event_schedule_total=event_schedule_total,
             reconciliation=reconciliation,
+            included_activity_count=sum(1 for event in year_events if event.event_type not in SCHEDULE_ONLY_TYPES and not (event.event_type == "LIQUIDITY" and not is_liquidity_reward(event))),
+            schedule_only_activity_count=sum(1 for event in year_events if event.event_type in SCHEDULE_ONLY_TYPES or (event.event_type == "LIQUIDITY" and not is_liquidity_reward(event))),
         )

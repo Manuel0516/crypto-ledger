@@ -49,6 +49,12 @@ def render_accountant_pdf(session: Session, language: str = DEFAULT_LANGUAGE) ->
         .all()
     )
     links = [link for link in links if link.event_id in visible_event_ids and link.linked_event_id in visible_event_ids]
+    linked_event_ids = {event_id for link in links for event_id in (link.event_id, link.linked_event_id)}
+    explicit_transfers = [
+        event
+        for event in events
+        if event.id not in linked_event_ids and (event.event_type == "TRANSFER" or event.internal_transfer)
+    ]
 
     pdf = _ReportPDF()
     pdf.disclaimer_text = tr("accountant_disclaimer")
@@ -81,7 +87,7 @@ def render_accountant_pdf(session: Session, language: str = DEFAULT_LANGUAGE) ->
         _text(pdf, tr("no_events"))
 
     _section(pdf, tr("transfers_section"))
-    if links:
+    if links or explicit_transfers:
         _table(
             pdf,
             [tr("date"), tr("asset"), tr("quantity"), tr("from_account"), tr("to_account")],
@@ -90,10 +96,20 @@ def render_accountant_pdf(session: Session, language: str = DEFAULT_LANGUAGE) ->
                     link.event.occurred_at.date().isoformat(),
                     link.event.primary_asset.symbol,
                     link.event.primary_amount,
-                    link.event.source_label,
-                    link.linked_event.source_label,
+                    link.event.wallet_display,
+                    link.linked_event.wallet_display,
                 ]
                 for link in links
+            ]
+            + [
+                [
+                    event.occurred_at.date().isoformat(),
+                    event.primary_asset.symbol,
+                    event.primary_amount,
+                    event.wallet_display if event.direction == "-" else (event.address_from or "Unlinked source"),
+                    (event.address_to or "Unlinked destination") if event.direction == "-" else event.wallet_display,
+                ]
+                for event in explicit_transfers
             ],
             [25, 20, 30, 55, 55],
         )
@@ -122,12 +138,12 @@ def render_accountant_pdf(session: Session, language: str = DEFAULT_LANGUAGE) ->
     if truncated:
         _table(
             pdf,
-            [tr("date"), tr("event_type"), tr("asset"), tr("quantity"), tr("counterparty")],
+            [tr("date"), tr("event_type"), tr("asset"), tr("quantity"), tr("from_account"), tr("to_account")],
             [
-                [e.occurred_at.date().isoformat(), e.event_type, e.primary_asset.symbol, e.primary_amount, e.counterparty or "-"]
+                [e.occurred_at.date().isoformat(), e.event_type, e.primary_asset.symbol, e.primary_amount, e.wallet_display, e.address_to or "-"]
                 for e in truncated
             ],
-            [25, 35, 20, 30, 75],
+            [25, 25, 20, 25, 55, 55],
         )
         if len(events) > len(truncated):
             pdf.ln(1)

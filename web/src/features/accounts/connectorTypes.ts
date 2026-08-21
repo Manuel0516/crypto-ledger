@@ -12,9 +12,7 @@ export const CONNECTOR_TYPES: ConnectorTypeMeta[] = [
   { id: "bitcoin_address", label: "Bitcoin", hint: "Address or xpub/ypub/zpub — no keys", glyph: "₿" },
   { id: "evm_address", label: "EVM wallet", hint: "MetaMask, Rabby — Ethereum, L2s, Avalanche, BSC & custom networks", glyph: "Ξ" },
   { id: "solana_address", label: "Solana", hint: "Phantom — native SOL transfers", glyph: "◎" },
-  { id: "monero_rpc", label: "Monero", hint: "Your own monero-wallet-rpc", glyph: "ɱ" },
-  { id: "lightning_node", label: "Lightning", hint: "Any NWC wallet (ZEUS, Alby Hub, …) or your own LND node", glyph: "⚡" },
-  { id: "manual", label: "Manual / other", hint: "No live sync — track by hand", glyph: "•" },
+  { id: "manual", label: "Manual / other", hint: "No live sync — track by hand, e.g. Monero", glyph: "•" },
 ];
 
 // Metadata for connector_type values only reachable via a nested mode

@@ -140,7 +140,7 @@ def reconcile_account(session: Session, account: Account, connector=None) -> Rec
     on hand — skips rebuilding it (re-decrypting config, re-detecting a
     Bitget account's classic/UTA mode) a second time right after a sync."""
     if connector is None:
-        connector = build_connector(account)
+        connector = build_connector(account, session)
     if connector is None:
         return ReconcileResult(status="unsupported", assets=[], message="This source doesn't support automatic sync.")
 

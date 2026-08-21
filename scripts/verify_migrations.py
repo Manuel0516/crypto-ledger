@@ -45,8 +45,8 @@ def main() -> None:
                 ("fixture", "fixture-raw-1", timestamp, timestamp, payload_json, hashlib.sha256(payload_json.encode()).hexdigest(), "fixture-1"),
             )
             connection.execute(
-                "INSERT INTO events (external_id, raw_event_id, account_id, event_type, direction, status, occurred_at, original_timestamp, primary_asset_id, primary_amount, source_label, provenance, normalizer_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                ("fixture-event-1", 1, 1, "DEPOSIT", "+", "COMPLETE", timestamp, timestamp, 1, "1.25", "Representative exchange", "automatic", "fixture-1", timestamp, timestamp),
+                "INSERT INTO events (external_id, raw_event_id, account_id, event_type, direction, status, occurred_at, original_timestamp, primary_asset_id, primary_amount, source_label, destination_label, provenance, normalizer_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("fixture-event-1", 1, None, "DEPOSIT", "+", "COMPLETE", timestamp, timestamp, 1, "1.25", "Legacy source", "Representative destination", "automatic", "fixture-1", timestamp, timestamp),
             )
             connection.execute(
                 "INSERT INTO valuations (event_id, quote_currency, unit_price, total_value, requested_timestamp, observation_timestamp, provider, provider_asset_id, method, confidence, manual_override) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -68,15 +68,21 @@ def main() -> None:
             assert connection.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0] == 1
             assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
             assert connection.execute("SELECT COUNT(*) FROM valuations").fetchone()[0] == 1
+            assert connection.execute("SELECT address_from, address_to FROM events WHERE id = 1").fetchone() == ("Legacy source", "Representative destination")
             account_columns = {row[1] for row in connection.execute("PRAGMA table_info(accounts)")}
             event_columns = {row[1] for row in connection.execute("PRAGMA table_info(events)")}
             valuation_columns = {row[1] for row in connection.execute("PRAGMA table_info(valuations)")}
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
             assert "connector_type" in account_columns
-            assert "evidence_reference" in event_columns
+            for removed_column in ("source_label", "description", "merchant", "tags_json", "evidence_reference", "notes"):
+                assert removed_column not in event_columns
+            assert "counterparty" not in event_columns
+            assert "destination_label" not in event_columns
             assert "granularity" in valuation_columns
             assert "account_balances" in tables
-            assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "c4d5e6f7a8b9"
+            settings_columns = {row[1] for row in connection.execute("PRAGMA table_info(app_settings)")}
+            assert "explorer_api_keys_encrypted" in settings_columns
+            assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "c9d0e1f2a3b4"
         finally:
             connection.close()
 

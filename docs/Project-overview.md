@@ -680,7 +680,6 @@ Store:
 ```text
 source_account
 destination_account
-counterparty
 ownership status
 ```
 
@@ -769,11 +768,7 @@ funding fee
 Allow:
 
 ```text
-description
-counterparty
-merchant
-notes
-tags
+transaction identifiers and wallet/address fields
 ```
 
 This becomes useful years later when explaining transactions.
@@ -1276,7 +1271,6 @@ type
 asset
 amount
 account
-counterparty
 fees
 notes
 fiat value
@@ -2487,7 +2481,6 @@ Search:
 transaction hash
 exchange ID
 address
-counterparty
 description
 ```
 
@@ -2508,7 +2501,6 @@ SEK
 
 Source
 Destination
-Counterparty
 
 Fees
 

@@ -1092,7 +1092,7 @@ class BinanceLiveConnector:
             )
             yield RawRecord(self.source_id, f"{kind}-{record_id}", _ms(record.get("time")), payload)
 
-        # C2C/P2P trades are settled directly between a counterparty and the
+        # C2C/P2P trades are settled directly between an external wallet and the
         # user's funding wallet; they do not appear in either spot fills or
         # card/bank "Buy Crypto" history.
         for trade_type in ("BUY", "SELL"):
@@ -1351,7 +1351,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("coin", "")).upper(),
                 amount=str(payload.get("amount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 address_to=payload.get("address"),
                 notes=f"Binance deposit · {payload.get('txId', '')[:16]}",
                 deposit_id=str(payload.get("id")) if payload.get("id") is not None else None,
@@ -1371,8 +1371,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("coin", "")).upper(),
                 amount=str(payload.get("amount", "0")),
-                source_label=self.account_label,
-                destination_label=payload.get("address"),
+                account_name=self.account_label,
                 address_to=payload.get("address"),
                 notes=f"Binance withdrawal · {payload.get('id')}",
                 fees=fees,
@@ -1396,7 +1395,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=base_asset,
                 amount=str(payload.get("qty", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance {'isolated Margin' if payload.get('_is_isolated') else 'cross Margin' if kind == 'margin_trade' else 'spot'} {side} · {payload['_symbol']}",
                 fees=fees,
                 secondary_asset_symbol=quote_asset,
@@ -1415,7 +1414,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("asset", "")).upper(),
                 amount=str(payload.get("principal", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance margin loan · {payload.get('txId', '')}",
                 order_id=str(payload.get("txId")) if payload.get("txId") is not None else None,
             )
@@ -1430,7 +1429,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("asset", "")).upper(),
                 amount=str(payload.get("amount", payload.get("principal", "0"))),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance margin repay · {payload.get('txId', '')}",
                 order_id=str(payload.get("txId")) if payload.get("txId") is not None else None,
             )
@@ -1445,7 +1444,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("asset", "")).upper(),
                 amount=str(payload.get("interest", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=(
                     f"Binance margin interest · {payload.get('type', 'unspecified')}"
                     f" · principal {payload.get('principal', '')}"
@@ -1465,7 +1464,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("loanCoin", "")).upper(),
                 amount=str(payload.get("initialLoanAmount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance Crypto Loan borrow · {payload.get('orderId', '')}",
                 secondary_asset_symbol=str(payload.get("collateralCoin", "")).upper() or None,
                 secondary_amount=_positive_amount(payload.get("initialCollateralAmount")),
@@ -1485,7 +1484,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("collateralCoin" if uses_collateral else "loanCoin", "")).upper(),
                 amount=collateral_used if uses_collateral and collateral_used else str(payload.get("repayAmount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance Crypto Loan {'collateral repayment' if uses_collateral else 'repayment'} · {payload.get('orderId', '')}",
                 secondary_asset_symbol=(str(payload.get("collateralCoin", "")).upper() or None) if not uses_collateral else None,
                 secondary_amount=_positive_amount(payload.get("collateralReturn")) if not uses_collateral else None,
@@ -1504,7 +1503,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("collateralCoin", "")).upper(),
                 amount=str(payload.get("amount", payload.get("collateralAmount", "0"))),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance {payload.get('_loan_mode', 'stable')} Crypto Loan collateral {'lock' if is_additional else 'release'} · {payload.get('orderId', '')}",
                 order_id=str(payload.get("orderId")) if payload.get("orderId") is not None else None,
             )
@@ -1523,7 +1522,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("collateralCoin", "")).upper(),
                 amount=str(payload.get("liquidationCollateralAmount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance Flexible Loan liquidation · {payload.get('loanCoin', '')}",
                 fees=fees,
                 secondary_asset_symbol=str(payload.get("collateralCoin", "")).upper() or None,
@@ -1541,7 +1540,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("asset", "")).upper(),
                 amount=str(payload.get("rewards", payload.get("amount", "0"))),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance Simple Earn {payload.get('_earn_product', 'flexible')} ({kind.split('_')[1]})",
             )
 
@@ -1558,7 +1557,7 @@ class BinanceLiveConnector:
                     original_timestamp=occurred_at.isoformat(),
                     asset_symbol=reward_asset,
                     amount=str(payload.get("rewardsAmount", "0")),
-                    source_label=self.account_label,
+                    account_name=self.account_label,
                     notes=(
                         f"Binance {product} reward · position {payload.get(f'{product}Position', '')}"
                         f" · APR {payload.get('annualPercentageRate', '')}"
@@ -1577,7 +1576,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("asset", "")).upper(),
                 amount=str(payload.get("amount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=(
                     f"Binance {product} {'subscription' if is_subscribe else 'redemption'}"
                     + (f" · fee {fee_amount}" if fee_amount else "")
@@ -1603,7 +1602,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=source_asset,
                 amount=source_amount,
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance {product.upper()} staking {'subscription' if is_stake else 'redemption'} · {payload.get('purchaseId') or payload.get('redeemId') or payload.get('time') or ''}",
                 secondary_asset_symbol=destination_asset,
                 secondary_amount=destination_amount,
@@ -1621,7 +1620,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("fromAsset", "")).upper(),
                 amount=str(payload.get("fromAmount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance WBETH {'wrap' if kind == 'wbeth_wrap' else 'unwrap'} · rate {payload.get('exchangeRate', '')}",
                 secondary_asset_symbol=str(payload.get("toAsset", "")).upper() or None,
                 secondary_amount=_positive_amount(payload.get("toAmount")),
@@ -1639,7 +1638,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=reward_asset,
                 amount=amount,
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance {reward_asset} staking reward · APR {payload.get('annualPercentageRate', payload.get('apr', ''))}",
             )
 
@@ -1653,7 +1652,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("toAsset", "")).upper(),
                 amount=str(payload.get("toAmount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance convert · {payload.get('fromAsset')} → {payload.get('toAsset')}",
                 secondary_asset_symbol=str(payload.get("fromAsset", "")).upper(),
                 secondary_amount=_positive_amount(payload.get("fromAmount")),
@@ -1679,7 +1678,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("tokenName", "")).upper(),
                 amount=str(payload.get("amount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance Leveraged Token {'subscription' if is_subscribe else 'redemption'} · NAV {payload.get('nav', '')}",
                 fees=fees,
                 secondary_asset_symbol="USDT",
@@ -1697,7 +1696,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("cryptoCurrency", "")).upper(),
                 amount=str(payload.get("obtainAmount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance buy crypto ({payload.get('paymentMethod', 'fiat')}) · {payload.get('orderNo', '')}",
                 fees=_fiat_fees(payload),
                 secondary_asset_symbol=str(payload.get("fiatCurrency", "")).upper(),
@@ -1715,7 +1714,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("cryptoCurrency", "")).upper(),
                 amount=str(payload.get("sourceAmount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance sell crypto ({payload.get('paymentMethod', 'fiat')}) · {payload.get('orderNo', '')}",
                 fees=_fiat_fees(payload),
                 secondary_asset_symbol=str(payload.get("fiatCurrency", "")).upper(),
@@ -1738,7 +1737,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=currency,
                 amount=str(payload.get("amount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance fiat {'deposit' if is_deposit else 'withdrawal'} · {payload.get('method', '')} · {payload.get('orderNo', '')}",
                 fees=fees,
                 order_id=str(payload.get("orderNo")) if payload.get("orderNo") else None,
@@ -1748,9 +1747,9 @@ class BinanceLiveConnector:
             order_type = str(payload.get("orderType", "")).upper()
             is_payment = order_type == "PAY"
             is_refund = order_type == "PAY_REFUND"
-            counterparty = payload.get("receiverInfo") if is_payment else payload.get("payerInfo") if is_refund else None
-            if isinstance(counterparty, dict):
-                counterparty = counterparty.get("name") or counterparty.get("email") or counterparty.get("userId")
+            wallet_identity = payload.get("receiverInfo") if is_payment else payload.get("payerInfo") if is_refund else None
+            if isinstance(wallet_identity, dict):
+                wallet_identity = wallet_identity.get("name") or wallet_identity.get("email") or wallet_identity.get("userId")
             return NormalizedEvent(
                 event_type="PAYMENT" if is_payment else "RECEIVE" if is_refund else "UNKNOWN",
                 event_subtype=f"binance_pay:{order_type or 'unspecified'}",
@@ -1760,8 +1759,8 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("currency", "")).upper(),
                 amount=str(payload.get("amount", "0")),
-                source_label=self.account_label,
-                counterparty=str(counterparty) if counterparty else None,
+                account_name=self.account_label if is_payment else str(wallet_identity) if wallet_identity else self.account_label,
+                address_to=str(wallet_identity) if is_payment else self.account_label if is_refund else None,
                 notes=(
                     f"Binance Pay {order_type or 'transaction'} · {payload.get('transactionId', '')}"
                     if (is_payment or is_refund)
@@ -1783,7 +1782,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("asset", "")).upper(),
                 amount=str(payload.get("amount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance Spot {label} · {payload.get('updateTime', '')}",
             )
 
@@ -1800,7 +1799,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("asset", "")).upper(),
                 amount=str(payload.get("amount", "0")).lstrip("-"),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=(
                     "Binance Cloud Mining payment"
                     if is_payment
@@ -1825,7 +1824,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=asset,
                 amount=amount,
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance internal transfer · {(transfer_type or 'unspecified').replace('_', ' → ')}",
                 secondary_asset_symbol=asset or None,
                 secondary_amount=_positive_amount(amount),
@@ -1848,7 +1847,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("coinName", "")).upper(),
                 amount=str(payload.get("amount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance Pool {label} · {payload.get('subName', '')} · {payload.get('_mining_algo', '')}",
             )
 
@@ -1872,7 +1871,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("coinName", "")).upper(),
                 amount=str(payload.get("profitAmount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=(
                     f"Binance Pool {'bonus' if is_bonus else 'earning'} · {payload.get('_mining_account', '')} · "
                     f"{payload.get('_mining_algo', '')} · type {payout_type or 'unspecified'} · "
@@ -1901,8 +1900,8 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("asset", "")).upper(),
                 amount=str(payload.get("amount", "0")),
-                source_label=self.account_label,
-                counterparty=payload.get("counterPartNickName"),
+                account_name=self.account_label if side == "SELL" else str(payload.get("counterPartNickName") or self.account_label),
+                address_to=str(payload.get("counterPartNickName") or self.account_label) if side == "SELL" else self.account_label,
                 notes=f"Binance C2C {side.lower()} · {payload.get('advertisementRole', 'order')} · {payload.get('orderNumber', '')}",
                 fees=fees,
                 secondary_asset_symbol=str(payload.get("fiat", "")).upper() or None,
@@ -1929,7 +1928,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("targetAsset", "")).upper(),
                 amount=str(payload.get("targetAssetAmount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance Auto-Invest · {payload.get('planName', payload.get('planId', ''))}",
                 fees=fees,
                 secondary_asset_symbol=str(payload.get("sourceAsset", "")).upper() or None,
@@ -1947,7 +1946,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("asset", "")).upper(),
                 amount=str(payload.get("amount", "0")),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance asset dividend · {payload.get('enInfo', '')}",
                 order_id=str(payload.get("tranId")) if payload.get("tranId") is not None else None,
             )
@@ -1969,7 +1968,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=margin_asset,
                 amount=notional,
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=(
                     f"Binance {payload.get('_futures_mode', 'usdt_m')} futures {side or 'fill'} · "
                     f"{payload.get('symbol', '')} · {position_side or 'position unspecified'} · "
@@ -1994,7 +1993,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=quote_asset,
                 amount=notional,
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=(
                     f"Binance Options {payload.get('side', 'trade')} · {payload.get('symbol', '')} · "
                     f"{payload.get('optionSide', 'option')} · price {payload.get('price', '')} · "
@@ -2020,7 +2019,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=currency,
                 amount=amount_raw.lstrip("-") or "0",
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=(
                     f"Binance Options exercise · {payload.get('symbol', '')} · "
                     f"strike {payload.get('exercisePrice', '')} · {payload.get('positionSide', '')}"
@@ -2042,7 +2041,7 @@ class BinanceLiveConnector:
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=str(payload.get("asset") or "USDT").upper(),
                 amount=amount_raw.lstrip("-") or "0",
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Binance Options funding flow · {bill_type or 'unrecognized'} · {payload.get('id', '')}",
                 order_id=str(payload.get("id")) if payload.get("id") is not None else None,
             )
@@ -2060,7 +2059,7 @@ class BinanceLiveConnector:
             original_timestamp=occurred_at.isoformat(),
             asset_symbol=str(payload.get("asset", "")).upper(),
             amount=amount_raw.lstrip("-") or "0",
-            source_label=self.account_label,
+            account_name=self.account_label,
             notes=f"Binance {payload.get('_futures_mode', 'usdt_m')} futures {income_type or 'unrecognized income type'} · {payload.get('symbol', '')}",
             order_id=str(payload.get("tranId")) if payload.get("tranId") is not None else None,
             trade_id=str(payload.get("tradeId")) if payload.get("tradeId") else None,

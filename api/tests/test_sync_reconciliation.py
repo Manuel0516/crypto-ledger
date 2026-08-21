@@ -42,7 +42,7 @@ class _StubConnector:
             original_timestamp=OCCURRED_AT.isoformat(),
             asset_symbol="BTC",
             amount="1.0",
-            source_label="Stub",
+            account_name="Stub",
         )
 
     def fetch_balances(self):

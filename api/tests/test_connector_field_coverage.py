@@ -288,7 +288,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
         )
         self.assertEqual((reward.event_type, reward.asset_symbol, reward.amount), ("STAKING_REWARD", "SOL", "0.003"))
 
-    def test_binance_c2c_trade_has_fiat_counter_leg_counterparty_and_fee(self) -> None:
+    def test_binance_c2c_trade_has_fiat_counter_leg_wallet_and_fee(self) -> None:
         connector = BinanceLiveConnector("key", "secret", "Binance")
         event = connector.normalize(
             RawRecord(
@@ -303,7 +303,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
             )
         )
         self.assertEqual((event.event_type, event.direction, event.asset_symbol, event.amount), ("SELL", "-", "USDT", "100"))
-        self.assertEqual((event.secondary_asset_symbol, event.secondary_amount, event.counterparty), ("EUR", "92", "buyer***"))
+        self.assertEqual((event.secondary_asset_symbol, event.secondary_amount, event.address_to), ("EUR", "92", "buyer***"))
         self.assertEqual((event.fees[0].asset_symbol, event.fees[0].amount), ("USDT", "0.1"))
 
     def test_binance_auto_invest_has_both_execution_legs_and_fee(self) -> None:
@@ -1103,7 +1103,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
             )
         )
         self.assertEqual((fiat.event_type, fiat.direction, fiat.asset_symbol, fiat.amount, fiat.fees[0].amount), ("DEPOSIT", "+", "EUR", "100", "1"))
-        self.assertEqual((payment.event_type, payment.direction, payment.counterparty), ("PAYMENT", "-", "Merchant"))
+        self.assertEqual((payment.event_type, payment.direction, payment.address_to), ("PAYMENT", "-", "Merchant"))
         self.assertEqual((unknown_pay.event_type, unknown_pay.status), ("UNKNOWN", "REQUIRES_REVIEW"))
 
     def test_binance_spot_rebates_distinguish_cashback_and_referral_credits(self) -> None:

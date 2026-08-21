@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import Session
 
 from app.db.models import AppSettings
+from app.security.secrets import decrypt_config
 
 
 DEFAULT_VALUATION_CURRENCIES = ("EUR", "SEK")
@@ -13,6 +14,21 @@ SUPPORTED_PRICE_PROVIDERS = ("coingecko",)
 THEME_OPTIONS = ("system", "light", "dark")
 EVIDENCE_RETENTION_POLICY = "indefinite"
 DEFAULT_RP2_PLUGINS = ("rp2_es",)
+
+
+def explorer_api_keys(settings: AppSettings | None) -> dict[str, str]:
+    """Return application-wide explorer/indexer keys without exposing them."""
+    if settings is None or not settings.explorer_api_keys_encrypted:
+        return {}
+    try:
+        config = decrypt_config(settings.explorer_api_keys_encrypted)
+    except (RuntimeError, ValueError, TypeError):
+        return {}
+    return {
+        str(name): str(value).strip()
+        for name, value in config.items()
+        if str(name).strip() and str(value).strip()
+    }
 
 
 def minimum_activity_threshold(settings: AppSettings) -> Decimal:

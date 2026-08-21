@@ -44,6 +44,12 @@ class TaxReadinessResult:
     unsynced_source_count: int = 0
     unpriced_fee_count: int = 0
     missing_raw_evidence_count: int = 0
+    # Simplified report-readiness counters. Older fields remain for
+    # compatibility with existing clients and report history.
+    activity_count: int = 0
+    priced_activity_count: int = 0
+    warning_count: int = 0
+    incomplete_activity_count: int = 0
     issues: list[ReadinessIssue] = field(default_factory=list)
     ready: bool = True
 
@@ -130,7 +136,8 @@ class EventScheduleRow:
     amount: str
     secondary_asset: str | None
     secondary_amount: str | None
-    counterparty: str | None
+    source_wallet: str | None
+    destination_wallet: str | None
 
 
 @dataclass
@@ -165,6 +172,8 @@ class TaxCalculationResult:
     event_schedule_rows: list[EventScheduleRow] = field(default_factory=list)
     event_schedule_total: int = 0  # total year-events before the schedule's row cap was applied
     reconciliation: ReconciliationSummary | None = None
+    included_activity_count: int = 0
+    schedule_only_activity_count: int = 0
     # Extra downloadable files an adapter produces beyond the standard
     # PDF/CSV (e.g. Spain's raw RP2 ODS outputs) — {display_name: file_path}.
     raw_outputs: dict[str, Path] = field(default_factory=dict)

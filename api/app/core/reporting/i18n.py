@@ -97,7 +97,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "manual_events": "Manually-entered events",
         "schedule_section": "Detailed event schedule",
         "event_type": "Type",
-        "counterparty": "Counterparty",
         "schedule_truncated": (
             "Showing the first {shown} of {total} events for this tax year - download the Full Ledger CSV for "
             "the complete itemized list."
@@ -207,7 +206,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "manual_events": "Eventos introducidos manualmente",
         "schedule_section": "Detalle de eventos",
         "event_type": "Tipo",
-        "counterparty": "Contraparte",
         "schedule_truncated": (
             "Mostrando los primeros {shown} de {total} eventos de este ejercicio fiscal - descarga el CSV del "
             "libro completo para la lista detallada completa."

@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, ChevronRight, Link2, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, ChevronRight, RefreshCw } from "lucide-react";
 import type { EventSummary } from "../../types";
 import { eventDirection } from "../../types";
 import { CryptoAmount } from "./CryptoAmount";
@@ -48,7 +48,15 @@ export function ActivityRow({ event, onOpen }: RowProps) {
         {event.network && <span className="mt-0.5 block truncate text-[10px] text-faint">{event.network}</span>}
       </span>
 
-      <CryptoAmount amount={event.primary_amount} symbol={event.asset_symbol} className="block truncate text-[13px] font-medium text-ink" />
+      {event.secondary_asset_symbol && event.secondary_amount ? (
+        <span className="flex min-w-0 items-center gap-1 truncate text-[13px] font-medium text-ink">
+          <CryptoAmount amount={event.primary_amount} symbol={event.asset_symbol} />
+          <ArrowRight size={11} className="shrink-0 text-faint" />
+          <CryptoAmount amount={event.secondary_amount} symbol={event.secondary_asset_symbol} />
+        </span>
+      ) : (
+        <CryptoAmount amount={event.primary_amount} symbol={event.asset_symbol} className="block truncate text-[13px] font-medium text-ink" />
+      )}
 
       <span className="text-[13px] text-ink">
         <MoneyValue value={event.eur_value} />
@@ -58,7 +66,7 @@ export function ActivityRow({ event, onOpen }: RowProps) {
         <MoneyValue value={event.sek_value} currency="SEK" />
       </span>
 
-      <span className="truncate text-xs text-soft">{event.source_label}</span>
+      <span className="truncate text-xs text-soft">{event.address_from_label || event.address_from || event.account_name || "Unlinked wallet"}</span>
 
       <span className="flex items-center gap-1.5">
         <StatusPill status={event.status} />
@@ -71,9 +79,6 @@ export function ActivityRow({ event, onOpen }: RowProps) {
           <span className="inline-flex items-center gap-1 font-mono text-[9px] uppercase tracking-wide text-warn">
             <RefreshCw size={10} /> edited
           </span>
-        )}
-        {event.linked_event_count > 0 && (
-          <span className="inline-flex items-center gap-1 font-mono text-[9px] uppercase tracking-wide text-accent"><Link2 size={10} /> {event.linked_event_count}</span>
         )}
       </span>
 
@@ -101,14 +106,20 @@ export function ActivityCard({ event, onOpen, forceVisible = false }: CardRowPro
 
       <span className="min-w-0 flex-1">
         <EventTypeBadge eventType={event.event_type} />
-        <span className="mt-1 block">
+        <span className="mt-1 flex items-center gap-1">
           <CryptoAmount amount={event.primary_amount} symbol={event.asset_symbol} className="text-[15px] font-semibold text-ink" />
+          {event.secondary_asset_symbol && event.secondary_amount && (
+            <>
+              <ArrowRight size={12} className="shrink-0 text-faint" />
+              <CryptoAmount amount={event.secondary_amount} symbol={event.secondary_asset_symbol} className="text-[15px] font-semibold text-ink" />
+            </>
+          )}
         </span>
         <span className="mt-1 block text-[11px] text-soft">
           <MoneyValue value={event.eur_value} /> <span className="text-faint">·</span> <MoneyValue value={event.sek_value} currency="SEK" />
         </span>
         <span className="mt-0.5 block truncate text-[11px] text-faint">
-          {event.destination_label || event.address_to || event.source_label}
+          {event.address_to_label || event.address_to || "—"}
         </span>
       </span>
 
@@ -121,7 +132,6 @@ export function ActivityCard({ event, onOpen, forceVisible = false }: CardRowPro
         {event.modified && (
           <span className="font-mono text-[9px] uppercase tracking-wide text-warn">edited</span>
         )}
-        {event.linked_event_count > 0 && <span className="font-mono text-[9px] uppercase tracking-wide text-accent">linked</span>}
       </span>
     </button>
   );
@@ -136,7 +146,7 @@ export function ActivityTableHeader() {
       <span>Amount</span>
       <span>EUR</span>
       <span>SEK</span>
-      <span>Source</span>
+      <span>From</span>
       <span>Status</span>
       <span />
     </div>

@@ -91,7 +91,7 @@ def _event(session, asset: Asset, amount: str = "1.0") -> Event:
         occurred_at=OCCURRED_AT,
         primary_asset_id=asset.id,
         primary_amount=amount,
-        source_label="Test",
+        address_from="Test",
         provenance="manual",
         normalizer_version="test",
     )

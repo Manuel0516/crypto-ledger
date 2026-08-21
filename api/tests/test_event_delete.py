@@ -50,7 +50,7 @@ class EventDeleteTests(unittest.TestCase):
             occurred_at=OCCURRED_AT,
             primary_asset_id=asset.id,
             primary_amount="1",
-            source_label="Test source",
+            address_from="Test source",
             provenance="automatic",
             normalizer_version="test",
         )
@@ -62,7 +62,7 @@ class EventDeleteTests(unittest.TestCase):
             occurred_at=OCCURRED_AT,
             primary_asset_id=asset.id,
             primary_amount="0.5",
-            source_label="Test source",
+            address_from="Test source",
             provenance="manual",
             normalizer_version="test",
         )

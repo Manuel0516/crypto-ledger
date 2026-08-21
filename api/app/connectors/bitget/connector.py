@@ -18,7 +18,7 @@ from app.connectors.base import NormalizedEvent, NormalizedFee, RawRecord
 #   direction: "+" | "-"       optional, inferred from type when absent
 #   fee: str                   optional decimal string
 #   fee_coin: str               optional, defaults to `coin`
-#   source / destination / counterparty / note: str, optional
+#   source / to / note: str, optional
 #   tx_hash / order_id / trade_id / deposit_id / withdrawal_id: optional
 #   address_from / address_to (or common camelCase/API aliases): optional
 
@@ -106,11 +106,9 @@ class BitgetConnector:
             original_timestamp=payload.get("timestamp"),
             asset_symbol=str(payload.get("coin", "")).upper(),
             amount=str(payload.get("amount", "0")),
-            source_label=payload.get("source", "Bitget"),
-            destination_label=payload.get("destination"),
-            counterparty=payload.get("counterparty"),
+            account_name=payload.get("source", "Bitget"),
             address_from=address_from,
-            address_to=address_to,
+            address_to=address_to or payload.get("destination"),
             notes=payload.get("note"),
             fees=fees,
             tx_hash=tx_hash,

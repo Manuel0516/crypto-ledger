@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.api.accounts import _validate_chain_network
 from app.connectors.base import ConnectorUnavailable, RawRecord
-from app.connectors.evm.connector import CHAINS, EVMAddressConnector, _DEFAULT_BSC_TOKEN_CONTRACTS
+from app.connectors.evm.connector import CHAINS, EVMAddressConnector, _DEFAULT_BSC_TOKEN_CONTRACTS, _merge_lp_deposits, _merge_swap_legs
 from app.core.assets.registry import KNOWN_ASSETS
 
 
@@ -439,6 +439,196 @@ class EVMConnectorTests(unittest.TestCase):
         self.assertEqual(nft.asset_type, "NFT")
         self.assertEqual(nft.amount, "3")
         self.assertEqual(nft.event_type, "NFT_TRANSFER")
+
+    def test_two_leg_different_asset_transaction_merges_into_one_swap(self) -> None:
+        out_leg = {
+            "_kind": "native",
+            "_native_symbol": "BNB",
+            "hash": "0xswap",
+            "from": ADDRESS,
+            "to": OTHER_ADDRESS,
+            "value": "1000000000000000000",
+            "gasUsed": "150000",
+            "gasPrice": "1000000000",
+        }
+        in_leg = {
+            "_kind": "token",
+            "hash": "0xswap",
+            "from": OTHER_ADDRESS,
+            "to": ADDRESS,
+            "value": "2500000",
+            "tokenDecimal": "6",
+            "tokenSymbol": "USDT",
+            "contractAddress": "0x3333333333333333333333333333333333333333",
+            "logIndex": "1",
+        }
+
+        merged = list(_merge_swap_legs([(out_leg, "0xswap"), (in_leg, "0xswap-token")], ADDRESS))
+
+        self.assertEqual(len(merged), 1)
+        payload, external_id = merged[0]
+        self.assertEqual(external_id, "0xswap-swap")
+        self.assertEqual(payload["_kind"], "swap")
+        self.assertEqual(payload["_out_symbol"], "BNB")
+        self.assertEqual(payload["_out_amount"], "1.000000000000000000")
+        self.assertEqual(payload["_in_symbol"], "USDT")
+        self.assertEqual(payload["_in_amount"], "2.500000")
+        self.assertEqual(payload["_gas_eth"], "0.000150000000000000")
+
+    def test_normalize_swap_kind_produces_a_single_swap_event(self) -> None:
+        raw = RawRecord(
+            source_id="evm:bsc:test",
+            external_id="0xswap-swap",
+            source_timestamp=OCCURRED_AT,
+            payload={
+                "_kind": "swap",
+                "_network": "BNB Smart Chain",
+                "_native_symbol": "BNB",
+                "hash": "0xswap",
+                "from": ADDRESS,
+                "to": OTHER_ADDRESS,
+                "blockNumber": "123",
+                "_out_symbol": "BNB",
+                "_out_amount": "1.000000000000000000",
+                "_out_contract": None,
+                "_out_asset_type": "COIN",
+                "_in_symbol": "USDT",
+                "_in_amount": "2.500000",
+                "_gas_eth": "0.000150000000000000",
+            },
+        )
+
+        event = self.connector.normalize(raw)
+
+        self.assertEqual(event.event_type, "SWAP")
+        self.assertEqual(event.status, "COMPLETE")
+        self.assertEqual(event.asset_symbol, "BNB")
+        self.assertEqual(event.amount, "1.000000000000000000")
+        self.assertEqual(event.secondary_asset_symbol, "USDT")
+        self.assertEqual(event.secondary_amount, "2.500000")
+        self.assertEqual(len(event.fees), 1)
+        self.assertEqual(event.fees[0].amount, "0.000150000000000000")
+
+    def test_three_leg_transaction_is_left_unmerged(self) -> None:
+        legs = [
+            ({"_kind": "token", "hash": "0xhop", "from": ADDRESS, "to": OTHER_ADDRESS, "value": "1", "tokenDecimal": "0", "tokenSymbol": "A", "contractAddress": "0xa"}, "0xhop-a"),
+            ({"_kind": "token", "hash": "0xhop", "from": OTHER_ADDRESS, "to": ADDRESS, "value": "1", "tokenDecimal": "0", "tokenSymbol": "B", "contractAddress": "0xb"}, "0xhop-b"),
+            ({"_kind": "token", "hash": "0xhop", "from": ADDRESS, "to": OTHER_ADDRESS, "value": "1", "tokenDecimal": "0", "tokenSymbol": "C", "contractAddress": "0xc"}, "0xhop-c"),
+        ]
+
+        merged = list(_merge_swap_legs(legs, ADDRESS))
+
+        self.assertEqual({p["_kind"] for p, _ in merged}, {"token"})
+        self.assertEqual(len(merged), 3)
+
+    def test_pancakeswap_v3_position_mint_merges_with_its_funding_legs_into_lp_deposit(self) -> None:
+        position_manager = "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364"
+        native_leg = {
+            "_kind": "native",
+            "_native_symbol": "BNB",
+            "hash": "0xlp",
+            "from": ADDRESS,
+            "to": position_manager,
+            "value": "13522229588952369",
+            "gasUsed": "516276",
+            "gasPrice": "50000000",
+        }
+        token_leg = {
+            "_kind": "token",
+            "hash": "0xlp",
+            "from": ADDRESS,
+            "to": "0xf2688fb5b81049dfb7703ada5e770543770612c4",
+            "value": "10851470589730129285",
+            "tokenDecimal": "18",
+            "tokenSymbol": "USDC",
+            "contractAddress": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+            "logIndex": "33",
+        }
+        mint_leg = {
+            "_kind": "nft721",
+            "hash": "0xlp",
+            "from": ZERO_ADDRESS,
+            "to": ADDRESS,
+            "tokenID": "7218109",
+            "tokenSymbol": "PCS-V3-POS",
+            "contractAddress": position_manager,
+            "logIndex": "38",
+        }
+
+        merged = list(_merge_lp_deposits([(native_leg, "0xlp-native"), (token_leg, "0xlp-token"), (mint_leg, "0xlp-nft")], ADDRESS))
+
+        self.assertEqual(len(merged), 1)
+        payload, external_id = merged[0]
+        self.assertEqual(external_id, "0xlp-lp-deposit")
+        self.assertEqual(payload["_kind"], "lp_deposit")
+        self.assertEqual(payload["_protocol"], "PancakeSwap V3")
+        self.assertEqual(payload["_position_token_id"], "7218109")
+        self.assertEqual(payload["_out_symbol"], "BNB")
+        self.assertEqual(payload["_in_symbol"], "USDC")
+        self.assertEqual(payload["_in_amount"], "10.851470589730128680")
+
+        raw = RawRecord(source_id="evm:bsc:test", external_id=external_id, source_timestamp=OCCURRED_AT, payload={**payload, "_network": "BNB Smart Chain"})
+        event = self.connector.normalize(raw)
+        self.assertEqual(event.event_type, "LP_DEPOSIT")
+        self.assertEqual(event.asset_symbol, "BNB")
+        self.assertEqual(event.secondary_asset_symbol, "USDC")
+        self.assertIn("PancakeSwap V3", event.notes)
+        self.assertIn("#7218109", event.notes)
+        self.assertEqual(len(event.fees), 1)
+
+    def test_nft_mint_from_an_unrecognized_contract_is_left_as_a_plain_nft_mint(self) -> None:
+        mint_leg = {
+            "_kind": "nft721",
+            "hash": "0xnotlp",
+            "from": ZERO_ADDRESS,
+            "to": ADDRESS,
+            "tokenID": "1",
+            "tokenSymbol": "SOMENFT",
+            "contractAddress": "0x9999999999999999999999999999999999999999",
+        }
+        token_leg = {
+            "_kind": "token",
+            "hash": "0xnotlp",
+            "from": ADDRESS,
+            "to": "0x1234567891234567891234567891234567891234",
+            "value": "1",
+            "tokenDecimal": "0",
+            "tokenSymbol": "USDT",
+            "contractAddress": "0x5555555555555555555555555555555555555555",
+        }
+
+        merged = list(_merge_lp_deposits([(mint_leg, "0xnotlp-nft"), (token_leg, "0xnotlp-token")], ADDRESS))
+
+        self.assertEqual({p["_kind"] for p, _ in merged}, {"nft721", "token"})
+        self.assertEqual(len(merged), 2)
+
+    def test_position_mint_with_no_funding_legs_is_left_unmerged(self) -> None:
+        position_manager = "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364"
+        mint_leg = {
+            "_kind": "nft721",
+            "hash": "0xnofund",
+            "from": ZERO_ADDRESS,
+            "to": ADDRESS,
+            "tokenID": "2",
+            "tokenSymbol": "PCS-V3-POS",
+            "contractAddress": position_manager,
+        }
+
+        merged = list(_merge_lp_deposits([(mint_leg, "0xnofund-nft")], ADDRESS))
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0][0]["_kind"], "nft721")
+
+    def test_same_asset_both_directions_is_not_treated_as_a_swap(self) -> None:
+        legs = [
+            ({"_kind": "token", "hash": "0xself", "from": ADDRESS, "to": OTHER_ADDRESS, "value": "1", "tokenDecimal": "0", "tokenSymbol": "USDT", "contractAddress": "0x3333333333333333333333333333333333333333"}, "0xself-out"),
+            ({"_kind": "token", "hash": "0xself", "from": OTHER_ADDRESS, "to": ADDRESS, "value": "1", "tokenDecimal": "0", "tokenSymbol": "USDT", "contractAddress": "0x3333333333333333333333333333333333333333"}, "0xself-in"),
+        ]
+
+        merged = list(_merge_swap_legs(legs, ADDRESS))
+
+        self.assertEqual({p["_kind"] for p, _ in merged}, {"token"})
+        self.assertEqual(len(merged), 2)
 
 
 if __name__ == "__main__":

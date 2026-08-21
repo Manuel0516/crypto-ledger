@@ -7,7 +7,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ..adapter import AcquisitionRow, AssetSummaryRow, GainLossRow, IncomeRow, TaxCalculationResult, TaxReadinessResult
-from ..common import build_readiness, build_supplementary_rows, classify_moves, load_events_through, uncovered_type_warning
+from ..common import SCHEDULE_ONLY_TYPES, build_readiness, build_supplementary_rows, classify_moves, is_liquidity_reward, load_events_through, uncovered_type_warning
 from ..format import format_money, format_quantity
 from ..rp2_runner import ods_io, runner
 
@@ -34,17 +34,65 @@ class SpainAdapter:
 
     def check_readiness(self, session: Session, tax_year: int) -> TaxReadinessResult:
         events = load_events_through(session, tax_year)
-        _, ambiguous = classify_moves(events)
-        return build_readiness(self.country_code, tax_year, session, events, self.default_currency, ambiguous)
+        return build_readiness(self.country_code, tax_year, session, events, self.default_currency)
 
     def calculate(
         self, session: Session, tax_year: int, method: str, taxpayer_name: str, work_dir: Path
     ) -> TaxCalculationResult:
         events = load_events_through(session, tax_year)
-        pairs, ambiguous = classify_moves(events)
-        if ambiguous:
-            raise ValueError(
-                f"{len(ambiguous)} transfer(s) aren't linked or classified — resolve the readiness issues first"
+        pairs, _ = classify_moves(events)
+
+        # RP2 cannot produce an output workbook with an empty asset set. A
+        # year containing only schedule-only activities (or only unpriced
+        # activities) is still a valid report, so return the complete
+        # schedule with explicit warnings instead of failing generation.
+        has_tax_input = any(
+            (
+                (is_liquidity_reward(event) or event.event_type in ods_io.IN_TYPE_MAP or event.event_type in ods_io.OUT_TYPE_MAP or event.event_type == "SWAP")
+                and any(v.quote_currency == "EUR" for v in event.valuations)
+            )
+            for event in events
+        )
+        if not has_tax_input:
+            year_events = [event for event in events if event.occurred_at.year == tax_year]
+            transfer_rows, correction_rows, event_schedule_rows, event_schedule_total, reconciliation = build_supplementary_rows(
+                session, events, pairs, tax_year
+            )
+            warnings = [
+                "No priced, classifiable activities were available for RP2. The report contains the full activity schedule and no estimated tax totals.",
+            ]
+            warnings.extend(
+                f"Activity #{event.id} ({event.event_type}) has no EUR valuation and was omitted from affected tax totals."
+                for event in year_events
+                if event.primary_asset.asset_type != "FIAT" and not any(v.quote_currency == "EUR" for v in event.valuations)
+            )
+            generic_liquidity = [event for event in year_events if event.event_type == "LIQUIDITY" and not is_liquidity_reward(event)]
+            if generic_liquidity:
+                warnings.append(
+                    f"{len(generic_liquidity)} generic liquidity activity/activities remain in the schedule without automatic tax treatment."
+                )
+            return TaxCalculationResult(
+                country=self.country_code,
+                tax_year=tax_year,
+                method=(method or self.default_method).upper(),
+                currency=self.default_currency,
+                generated_at=datetime.now(timezone.utc),
+                gain_loss_rows=[],
+                income_rows=[],
+                asset_summary=[],
+                total_short_term_gain="0",
+                total_long_term_gain="0",
+                total_income="0",
+                total_fees="0",
+                warnings=warnings,
+                engine=self.engine,
+                transfer_rows=transfer_rows,
+                correction_rows=correction_rows,
+                event_schedule_rows=event_schedule_rows,
+                event_schedule_total=event_schedule_total,
+                reconciliation=reconciliation,
+                included_activity_count=sum(1 for event in year_events if event.event_type not in SCHEDULE_ONLY_TYPES and not (event.event_type == "LIQUIDITY" and not is_liquidity_reward(event))),
+                schedule_only_activity_count=sum(1 for event in year_events if event.event_type in SCHEDULE_ONLY_TYPES or (event.event_type == "LIQUIDITY" and not is_liquidity_reward(event))),
             )
 
         ods_path, ini_path, input_warnings = ods_io.build_input(session, events, pairs, taxpayer_name or "Taxpayer", work_dir)
@@ -160,5 +208,7 @@ class SpainAdapter:
             event_schedule_rows=event_schedule_rows,
             event_schedule_total=event_schedule_total,
             reconciliation=reconciliation,
+            included_activity_count=sum(1 for event in year_events if event.event_type not in SCHEDULE_ONLY_TYPES and not (event.event_type == "LIQUIDITY" and not is_liquidity_reward(event))),
+            schedule_only_activity_count=sum(1 for event in year_events if event.event_type in SCHEDULE_ONLY_TYPES or (event.event_type == "LIQUIDITY" and not is_liquidity_reward(event))),
             raw_outputs=raw_outputs,
         )

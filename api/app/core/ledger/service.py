@@ -120,9 +120,15 @@ def ingest(
         return None
 
     normalized = connector.normalize(raw)
+    from_wallet = normalized.address_from
     if account_id is None:
-        account = session.query(Account).filter(Account.name == normalized.source_label).one_or_none()
-        account_id = account.id if account else None
+        account = session.query(Account).filter(Account.name == normalized.account_name).one_or_none()
+        if account:
+            account_id = account.id
+        elif not from_wallet:
+            # Manual/custom sources have no Account row; keep their wallet
+            # name in the canonical from value instead of a second label.
+            from_wallet = normalized.account_name
     asset = get_or_create_asset(
         session,
         normalized.asset_symbol,
@@ -152,15 +158,7 @@ def ingest(
         primary_amount=normalized.amount,
         secondary_asset_id=secondary_asset.id if secondary_asset else None,
         secondary_amount=normalized.secondary_amount,
-        source_label=normalized.source_label,
-        destination_label=normalized.destination_label,
-        counterparty=normalized.counterparty,
-        description=normalized.description,
-        merchant=normalized.merchant,
-        tags_json=json.dumps(sorted({tag.strip() for tag in normalized.tags if tag.strip()})) if normalized.tags else None,
-        evidence_reference=normalized.evidence_reference or raw.source_reference,
-        notes=normalized.notes,
-        address_from=normalized.address_from,
+        address_from=from_wallet,
         address_to=normalized.address_to,
         tx_hash=normalized.tx_hash,
         block_height=normalized.block_height,
@@ -171,6 +169,10 @@ def ingest(
         trade_id=normalized.trade_id,
         deposit_id=normalized.deposit_id,
         withdrawal_id=normalized.withdrawal_id,
+        # The simplified activity taxonomy reserves TRANSFER for movement
+        # between owned wallets, including subaccounts under one provider
+        # such as Bitget Spot and Bitget Futures.
+        internal_transfer=event_type == "TRANSFER",
         provenance="manual" if connector.source_id == "manual" else "automatic",
         normalizer_version=connector.version,
     )

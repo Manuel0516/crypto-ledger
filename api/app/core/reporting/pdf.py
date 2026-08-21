@@ -205,12 +205,12 @@ def render_tax_report_pdf(result: TaxCalculationResult, taxpayer_name: str, lang
     if result.event_schedule_rows:
         _table(
             pdf,
-            [tr("date"), tr("event_type"), tr("asset"), tr("quantity"), tr("counterparty")],
+            [tr("date"), tr("event_type"), tr("asset"), tr("quantity"), tr("from_account"), tr("to_account")],
             [
-                [r.occurred_at.date().isoformat(), r.event_type, r.asset, r.amount, r.counterparty or "-"]
+                [r.occurred_at.date().isoformat(), r.event_type, r.asset, r.amount, r.source_wallet or "-", r.destination_wallet or "-"]
                 for r in result.event_schedule_rows
             ],
-            [25, 35, 20, 30, 75],
+            [25, 25, 20, 25, 55, 55],
         )
         if result.event_schedule_total and result.event_schedule_total > len(result.event_schedule_rows):
             pdf.ln(1)

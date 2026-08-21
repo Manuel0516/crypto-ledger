@@ -14,9 +14,7 @@ from app.db.models import Event, Override
 # event is priced against would silently orphan its existing valuations, and
 # that risk isn't worth taking for a rare correction.
 _TEXT_FIELDS = {
-    "event_type", "event_subtype", "source_label", "destination_label",
-    "counterparty", "description", "merchant", "tags_json", "evidence_reference",
-    "address_from", "address_to", "notes",
+    "event_type", "event_subtype", "address_from", "address_to",
     "tx_hash", "order_id", "trade_id", "deposit_id", "withdrawal_id",
     "contract_address", "block_hash",
 }

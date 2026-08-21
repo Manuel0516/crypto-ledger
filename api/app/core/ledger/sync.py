@@ -105,7 +105,7 @@ def sync_account(session: Session, account: Account, *, backfill: bool = False) 
     is the routine incremental check a background scheduler runs on a timer
     — cheap, and safe to repeat because raw evidence storage is idempotent."""
     try:
-        connector = build_connector(account)
+        connector = build_connector(account, session)
         if connector is None:
             return SyncResult(
                 status="unsupported",

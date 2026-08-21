@@ -7,18 +7,14 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.ledger.overrides import effective_values
+from app.core.ledger.visibility import event_has_blocked_asset
 from app.core.settings import get_or_create_settings, is_under_activity_threshold
 from app.db.models import Account, Event, Issue, Override, PriceObservation
 
 from .adapter import CorrectionRow, EventScheduleRow, ReadinessIssue, ReconciliationSummary, TaxReadinessResult, TransferRow
-from .suggestions import suggest_reclassification
-
 INTERNAL_TRANSFER = "INTERNAL_TRANSFER"
-# Same-asset relocation types: correct tax treatment hinges entirely on
-# whether the other side is one of your own accounts (non-taxable move) or
-# someone else's (a disposal/acquisition) — never guessed, always either
-# linked via INTERNAL_TRANSFER or flagged as ambiguous.
 _MOVE_TYPES = ("WITHDRAWAL", "DEPOSIT", "TRANSFER", "SEND", "RECEIVE", "BRIDGE_OUT", "BRIDGE_IN")
+SCHEDULE_ONLY_TYPES = {"DEPOSIT", "WITHDRAWAL", "TRANSFER"}
 
 
 class EffectiveEvent:
@@ -62,16 +58,8 @@ class EffectiveEvent:
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
     @property
-    def source_label(self) -> str:
-        return self._values["source_label"] or self._event.source_label
-
-    @property
-    def destination_label(self) -> str | None:
-        return self._values["destination_label"]
-
-    @property
-    def counterparty(self) -> str | None:
-        return self._values["counterparty"]
+    def wallet_display(self) -> str:
+        return self._event.wallet_display
 
     @property
     def address_from(self) -> str | None:
@@ -115,7 +103,7 @@ def load_events_through(session: Session, tax_year: int) -> list[EffectiveEvent]
     included: list[EffectiveEvent] = []
     for event in events:
         effective = EffectiveEvent(event, effective_values(session, event)[0])
-        if not is_under_activity_threshold(effective, settings):
+        if not is_under_activity_threshold(effective, settings) and not event_has_blocked_asset(effective):
             included.append(effective)
     return included
 
@@ -151,15 +139,12 @@ def _is_self_canceling_relocation(event: EffectiveEvent) -> bool:
 
 
 def classify_moves(events: list[EffectiveEvent]) -> tuple[list[TransferPair], list[EffectiveEvent]]:
-    """Splits same-asset move events (WITHDRAWAL/DEPOSIT/TRANSFER/SEND/
-    RECEIVE/BRIDGE_OUT/BRIDGE_IN) into confirmed internal-transfer pairs
-    (linked via the INTERNAL_TRANSFER relationship, matched by direction
-    rather than exact type name) and ambiguous events with no such link.
-    Ambiguous events are never guessed at — they block report generation
-    instead (plan §95). A self-canceling relocation (see
-    _is_self_canceling_relocation) is excluded before either bucket: it's
-    provably non-taxable on its own, so it never needs linking or manual
-    resolution in the first place."""
+    """Return optional, explicitly linked transfer groups.
+
+    The second return value remains for compatibility with older adapters,
+    but is always empty. Independent moves are valid schedule activities and
+    never become readiness blockers merely because a counterpart is absent.
+    """
     by_id = {e.id: e for e in events}
     # Explicitly marked events are already classified by the user. They do
     # not need a counterpart link and must not remain in the ambiguous bucket.
@@ -176,8 +161,7 @@ def classify_moves(events: list[EffectiveEvent]) -> tuple[list[TransferPair], li
                 paired_ids.add(event.id)
                 paired_ids.add(counterpart.id)
                 break
-    ambiguous = [e for e in moves if e.id not in paired_ids]
-    return pairs, ambiguous
+    return pairs, []
 
 
 _LINK_WINDOW = timedelta(hours=48)
@@ -223,7 +207,18 @@ def uncovered_type_warning(year_events: list[EffectiveEvent], covered_types: set
     or neither depends on protocol-specific facts this ledger doesn't know.
     Rather than guess, they're left out of the cost-basis walk entirely;
     this surfaces that omission instead of hiding it (plan §95)."""
-    uncovered = sorted({e.event_type for e in year_events if e.id not in skip_ids and e.event_type not in covered_types})
+    uncovered = sorted(
+        {
+            e.event_type
+            for e in year_events
+            if (
+                e.id not in skip_ids
+                and e.event_type not in covered_types
+                and e.event_type not in SCHEDULE_ONLY_TYPES
+                and not is_liquidity_reward(e)
+            )
+        }
+    )
     if not uncovered:
         return None
     return (
@@ -233,13 +228,21 @@ def uncovered_type_warning(year_events: list[EffectiveEvent], covered_types: set
     )
 
 
+def is_liquidity_reward(event: EffectiveEvent) -> bool:
+    """Recognize a liquidity reward without treating every LP action as income."""
+    if event.event_type != "LIQUIDITY":
+        return False
+    subtype = (event.event_subtype or "").lower()
+    return any(token in subtype for token in ("reward", "yield", "interest", "earning", "fee"))
+
+
 def build_readiness(
     country: str,
     tax_year: int,
     session: Session,
     events: list[EffectiveEvent],
     currency: str,
-    ambiguous_transfers: list[EffectiveEvent],
+    ambiguous_transfers: list[EffectiveEvent] | None = None,
 ) -> TaxReadinessResult:
     year_events = [e for e in events if e.occurred_at.year == tax_year]
     year_event_ids = [e.id for e in year_events]
@@ -259,53 +262,23 @@ def build_readiness(
     missing_price = len(year_events) - priced
 
     issues: list[ReadinessIssue] = []
-    for event in ambiguous_transfers:
-        if event.occurred_at.year != tax_year and event.id not in year_event_ids:
-            continue
-        link = _suggest_transfer_link(event, ambiguous_transfers)
-        detail = (
-            f"{event.event_type.title()} of {event.primary_amount} {event.primary_asset.symbol} on "
-            f"{event.occurred_at.date()} isn't linked as an internal transfer and isn't otherwise "
-            "categorized — link it to its counterpart, mark it as an internal move, or correct its type before generating a report."
-        )
-        if link:
-            candidate, confidence = link
-            detail += (
-                f" A likely match was found: {candidate.event_type.title()} of {candidate.primary_amount} "
-                f"{candidate.primary_asset.symbol} on {candidate.occurred_at.date()} ({confidence} confidence)."
-            )
-        issues.append(
-            ReadinessIssue(
-                severity="blocking",
-                event_id=event.id,
-                title="Unclassified transfer",
-                detail=detail,
-                suggested_link_event_id=link[0].id if link else None,
-                suggested_link_confidence=link[1] if link else None,
-            )
-        )
     if missing_price:
         issues.append(
             ReadinessIssue(
-                severity="blocking",
+                severity="warning",
                 title="Missing prices",
-                detail=f"{missing_price} event(s) in {tax_year} have no {currency} valuation yet.",
+                detail=(
+                    f"{missing_price} activity/activities in {tax_year} have no {currency} valuation. "
+                    "They remain in the schedule but are omitted from affected tax totals; no value is estimated."
+                ),
             )
         )
     if needs_review:
         issues.append(
             ReadinessIssue(
-                severity="blocking",
-                title="Events awaiting review",
-                detail=f"{len(needs_review)} event(s) in {tax_year} are still flagged REQUIRES_REVIEW.",
-            )
-        )
-    if manual_count:
-        issues.append(
-            ReadinessIssue(
                 severity="warning",
-                title="Manual entries present",
-                detail=f"{manual_count} manually-entered event(s) in {tax_year} aren't independently verified.",
+                title="Activities awaiting review",
+                detail=f"{len(needs_review)} activity/activities in {tax_year} are still flagged REQUIRES_REVIEW; generation remains available.",
             )
         )
     if unresolved:
@@ -317,10 +290,9 @@ def build_readiness(
             )
         )
 
-    # Raw evidence complete (plan §94/§95): an automatically-imported event
-    # should always carry the raw payload it was normalized from. Manual
-    # entries legitimately have none — they're covered by the "manual
-    # entries present" check above instead.
+    # Automatic evidence can still be useful to review, but it is not a
+    # requirement for a report and manual activities are deliberately not
+    # singled out here.
     missing_evidence = [e for e in year_events if e.provenance == "automatic" and e.raw_event_id is None]
     if missing_evidence:
         issues.append(
@@ -389,25 +361,31 @@ def build_readiness(
             )
         )
 
-    account_names = {name for (name,) in session.query(Account.name).all()}
-    for event in year_events:
-        suggestion = suggest_reclassification(event, account_names)
-        if suggestion is None:
-            continue
+    incomplete_events = [
+        e for e in year_events if e.event_type == "SWAP" and (e.secondary_asset is None or not e.secondary_amount)
+    ]
+    for event in incomplete_events:
         issues.append(
             ReadinessIssue(
                 severity="warning",
                 event_id=event.id,
-                title="Manual entry could be reclassified",
-                detail=(
-                    f"This looks like it could be {suggestion.event_type} because {suggestion.reason}. "
-                    "Apply the suggestion or leave it as-is if it doesn't fit."
-                ),
-                suggested_event_type=suggestion.event_type,
+                title="Incomplete swap",
+                detail="This swap is missing its incoming asset or amount. It remains in the schedule and is omitted from affected tax totals.",
+            )
+        )
+    for event in [e for e in year_events if e.event_type == "LIQUIDITY" and not is_liquidity_reward(e)]:
+        issues.append(
+            ReadinessIssue(
+                severity="warning",
+                event_id=event.id,
+                title="Liquidity activity needs review",
+                detail="This liquidity add/remove remains in the schedule. It is not assigned a tax treatment automatically.",
             )
         )
 
-    ready = not any(i.severity == "blocking" for i in issues)
+    # All issues are informational. Readiness measures whether the report
+    # path is available, not whether every activity has been reconciled.
+    ready = True
     return TaxReadinessResult(
         country=country,
         tax_year=tax_year,
@@ -416,10 +394,14 @@ def build_readiness(
         missing_price_count=missing_price,
         manual_event_count=manual_count,
         unresolved_issue_count=unresolved,
-        ambiguous_transfer_count=len([e for e in ambiguous_transfers if e.id in year_event_ids]),
+        ambiguous_transfer_count=0,
         unsynced_source_count=len(unsynced),
         unpriced_fee_count=unpriced_fee_events,
         missing_raw_evidence_count=len(missing_evidence),
+        activity_count=len(year_events),
+        priced_activity_count=priced,
+        warning_count=len(issues),
+        incomplete_activity_count=len(incomplete_events),
         issues=issues,
         ready=ready,
     )
@@ -447,28 +429,27 @@ def build_supplementary_rows(
             occurred_at=pair.withdrawal.occurred_at,
             asset=pair.withdrawal.primary_asset.symbol,
             quantity=pair.withdrawal.primary_amount,
-            from_label=pair.withdrawal.source_label,
-            to_label=pair.deposit.source_label,
+            from_label=pair.withdrawal.wallet_display,
+            to_label=pair.deposit.wallet_display,
             event_ids=[pair.withdrawal.id, pair.deposit.id],
         )
         for pair in pairs
         if pair.withdrawal.id in year_event_ids or pair.deposit.id in year_event_ids
     ]
+    transfer_event_ids = {event_id for row in transfer_rows for event_id in row.event_ids}
     # A transfer can be confirmed as internal even when the other side is not
     # connected, was outside the source retention window, or is not imported
     # into this ledger. Keep it visible in the report without inventing a
     # linked event or a destination account.
     for event in year_events:
-        if not event.internal_transfer or event.event_type not in _MOVE_TYPES:
-            continue
-        if _is_self_canceling_relocation(event):
+        if event.id in transfer_event_ids or (not event.internal_transfer and event.event_type != "TRANSFER"):
             continue
         if event.direction == "-":
-            from_label = event.source_label
-            to_label = event.destination_label or event.counterparty or "Unlinked internal destination"
+            from_label = event.wallet_display
+            to_label = event.address_to or "Unlinked internal destination"
         else:
-            from_label = event.counterparty or event.destination_label or "Unlinked internal source"
-            to_label = event.source_label
+            from_label = event.address_from or "Unlinked internal source"
+            to_label = event.wallet_display
         transfer_rows.append(
             TransferRow(
                 occurred_at=event.occurred_at,
@@ -479,6 +460,7 @@ def build_supplementary_rows(
                 event_ids=[event.id],
             )
         )
+        transfer_event_ids.add(event.id)
 
     overrides = (
         session.query(Override)
@@ -512,7 +494,8 @@ def build_supplementary_rows(
             amount=e.primary_amount,
             secondary_asset=e.secondary_asset.symbol if e.secondary_asset else None,
             secondary_amount=e.secondary_amount,
-            counterparty=e.counterparty,
+            source_wallet=e.address_from if e.direction == "+" and e.address_from else e.wallet_display,
+            destination_wallet=e.address_to,
         )
         for e in truncated
     ]

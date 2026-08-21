@@ -233,7 +233,7 @@
   margin-top: 0.5rem !important;
 }
 
-/* Settings → Price providers: the credential action uses the same field
+/* Settings → Providers: the credential action uses the same field
    height as its API-key input. */
 .rounded-card:has(#provider-api-key) #provider-api-key,
 .rounded-card:has(#provider-api-key) label:has(#provider-api-key) + button {

@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowRight, Eye, Fingerprint, Link2, PencilLine, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Eye, Fingerprint, PencilLine, Plus, RotateCcw, Trash2 } from "lucide-react";
 import type { EventDetail, EditableEventField, Issue } from "../../types";
 import { EDITABLE_EVENT_FIELDS, formatType } from "../../types";
-import { getJson, postJson, putJson, deleteJson } from "../../lib/api";
+import { getJson, patchJson, postJson, putJson, deleteJson } from "../../lib/api";
 import { Drawer } from "../ui/Drawer";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Spinner } from "../ui/Button";
-import { Field, Input, Select, Textarea } from "../ui/Field";
+import { Field, Input, Select } from "../ui/Field";
 import { ErrorState } from "../ui/EmptyState";
 import { useConfirmDialog } from "../ui/ConfirmDialog";
 import { CryptoAmount } from "./CryptoAmount";
@@ -20,16 +20,8 @@ import { MarketPriceButton } from "./MarketPriceButton";
 const FIELD_LABELS: Record<EditableEventField, string> = {
   event_type: "Type",
   event_subtype: "Subtype",
-  source_label: "Source",
-  destination_label: "Destination",
-  counterparty: "Counterparty",
-  description: "Description",
-  merchant: "Merchant",
-  tags_json: "Tags",
-  evidence_reference: "Evidence reference",
   address_from: "From address",
   address_to: "To address",
-  notes: "Notes",
   primary_amount: "Amount",
   secondary_amount: "Received amount (swap)",
   occurred_at: "Date/time (ISO-8601)",
@@ -58,6 +50,7 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
   const [restoringField, setRestoringField] = useState<string | null>(null);
   const [resolvingIssue, setResolvingIssue] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [blockingAsset, setBlockingAsset] = useState<number | null>(null);
   const { confirm, confirmDialog } = useConfirmDialog();
 
   const load = async () => {
@@ -122,65 +115,11 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
     }
   };
 
-  const linkIssue = async (issue: Issue) => {
-    setResolvingIssue(issue.id);
-    setError("");
-    try {
-      await postJson(`/api/issues/${issue.id}/link`, {});
-      await load();
-      notifyChange();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not link this issue");
-    } finally {
-      setResolvingIssue(null);
-    }
-  };
-
-  const markIssueInternal = async (issue: Issue) => {
-    const confirmed = await confirm({
-      title: "Mark as internal transfer?",
-      message: "This will treat the event as a non-taxable move even without a linked counterpart. Only do this when you know the funds moved between accounts you control.",
-      confirmLabel: "Mark internal",
-    });
-    if (!confirmed) return;
-    setResolvingIssue(issue.id);
-    setError("");
-    try {
-      await postJson(`/api/issues/${issue.id}/mark-internal`, {});
-      await load();
-      notifyChange();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not mark this transfer internal");
-    } finally {
-      setResolvingIssue(null);
-    }
-  };
-
-  const toggleInternalTransfer = async () => {
-    if (!data?.event) return;
-    const enabled = !data.event.internal_transfer;
-    if (enabled) {
-      const confirmed = await confirm({
-        title: "Mark as internal transfer?",
-        message: "This treats the event as a non-taxable move even when no counterpart is linked. Only use it for funds moving between accounts you control.",
-        confirmLabel: "Mark internal",
-      });
-      if (!confirmed) return;
-    }
-    try {
-      await postJson(`/api/events/${eventId}/internal-transfer`, { enabled });
-      await load();
-      notifyChange();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not update the internal-transfer classification");
-    }
-  };
-
   const deleteEvent = async () => {
     if (!data?.event) return;
-    const confirmed = await confirm({
-      title: "Delete activity permanently?",
-      message: `This permanently removes ${formatType(data.event.event_type)} activity, its stored source evidence, corrections, links, valuations, and attachments. It cannot be undone. A future source sync may re-import the record.`,
+      const confirmed = await confirm({
+        title: "Delete activity permanently?",
+        message: `This permanently removes ${formatType(data.event.event_type)} activity, its stored source evidence, corrections, valuations, and attachments. It cannot be undone. A future source sync may re-import the record.`,
       confirmLabel: "Delete activity",
       destructive: true,
     });
@@ -196,6 +135,26 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
       setError(reason instanceof Error ? reason.message : "Could not delete this activity");
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const blockAsset = async (assetId: number, symbol: string) => {
+    const confirmed = await confirm({
+      title: `Block ${symbol}?`,
+      message: `This hides ${symbol} from Overview, Activity, tax reports, and issue counts. Its canonical activity and raw evidence stay stored, and you can unblock it later in Settings → Data.`,
+      confirmLabel: `Block ${symbol}`,
+    });
+    if (!confirmed) return;
+    setBlockingAsset(assetId);
+    setError("");
+    try {
+      await patchJson(`/api/assets/${assetId}`, { is_blocked: true });
+      notifyChange();
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : `Could not block ${symbol}`);
+    } finally {
+      setBlockingAsset(null);
     }
   };
 
@@ -231,16 +190,16 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
             </div>
           </div>
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-soft">
-            <span>{formatDateTime(event.occurred_at)} · {event.provenance} record</span>
+            <span>{formatDateTime(event.occurred_at)}</span>
             {event.network && <Badge tone="neutral">{event.network}</Badge>}
-            {event.is_internal && <Badge tone="info">Internal transfer</Badge>}
+            {event.event_type === "TRANSFER" && <Badge tone="info">Internal transfer</Badge>}
             {event.has_open_issue && <Badge tone="warning">Unresolved issue</Badge>}
           </p>
 
           {event.status === "REQUIRES_REVIEW" && (
             <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl bg-warn-soft px-4 py-3">
               <p className="text-xs text-warn">
-                Flagged for review — {event.provenance === "manual" ? "manually entered records aren't independently verified" : "this record's details couldn't be fully determined automatically"}. Check it over, then resolve the review issue.
+                Flagged for review — this record's details could not be fully determined automatically. Check it over, then resolve the review issue.
               </p>
               <Button size="sm" variant="primary" onClick={() => void markReviewed()} loading={reviewing}>
                 Resolve issue
@@ -261,8 +220,6 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
                       </div>
                     </div>
                     <div className="flex shrink-0 flex-wrap gap-2 sm:flex-col sm:items-stretch">
-                      {issue.linkable && <Button size="sm" variant="accent-soft" icon={<Link2 size={13} />} onClick={() => void linkIssue(issue)} loading={resolvingIssue === issue.id} disabled={resolvingIssue !== null}>Link accounts</Button>}
-                      {issue.markable && <Button size="sm" variant="secondary" onClick={() => void markIssueInternal(issue)} loading={resolvingIssue === issue.id} disabled={resolvingIssue !== null}>Mark internal</Button>}
                       <Button size="sm" variant="secondary" onClick={() => void resolveIssue(issue)} loading={resolvingIssue === issue.id} disabled={resolvingIssue !== null && resolvingIssue !== issue.id}>Resolve issue</Button>
                     </div>
                   </div>
@@ -271,13 +228,11 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
             </Section>
           )}
 
-          {/* Details grid */}
-          <Section title="Details">
+          {/* Transaction facts */}
+          <Section title="Transaction">
             <dl className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
-              <DetailRow label="Source" value={event.source_label} copyText={event.source_label} />
-              <DetailRow label="Destination" value={event.destination_label || "—"} copyText={event.destination_label || undefined} />
-              <DetailRow label="Counterparty" value={event.counterparty || "—"} copyText={event.counterparty || undefined} wide />
-              {event.merchant && <DetailRow label="Merchant" value={event.merchant} copyText={event.merchant} />}
+              <DetailRow label="From" value={event.address_from_label || event.address_from || event.account_name || "—"} copyText={event.address_from || undefined} />
+              <DetailRow label="To" value={event.address_to_label || event.address_to || "—"} copyText={event.address_to || undefined} />
               {event.secondary_asset_symbol && event.secondary_amount && (
                 <DetailRow
                   label="Received"
@@ -288,32 +243,7 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
               <DetailRow label="EUR value" value={<MoneyValue value={event.eur_value} />} />
               <DetailRow label="SEK value" value={<MoneyValue value={event.sek_value} currency="SEK" />} />
             </dl>
-            {(event.description || event.tags.length || event.evidence_reference) && (
-              <div className="mt-4 grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-                {event.description && <DetailRow label="Description" value={event.description} copyText={event.description} />}
-                {event.tags.length > 0 && <DetailRow label="Tags" value={event.tags.join(" · ")} copyText={event.tags.join(" · ")} />}
-                {event.evidence_reference && <DetailRow label="Evidence reference" value={<span className="font-mono text-[11px]">{event.evidence_reference}</span>} copyText={event.evidence_reference} wide />}
-              </div>
-            )}
           </Section>
-
-          {/* Raw addresses — distinct from the account labels above (plan §17) */}
-          {(event.address_from || event.address_to) && (
-            <Section title="Addresses">
-              <dl className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
-                <DetailRow
-                  label="From address"
-                  value={event.address_from ? <span className="break-all font-mono text-[11px]">{event.address_from}</span> : "—"}
-                  copyText={event.address_from || undefined}
-                />
-                <DetailRow
-                  label="To address"
-                  value={event.address_to ? <span className="break-all font-mono text-[11px]">{event.address_to}</span> : "—"}
-                  copyText={event.address_to || undefined}
-                />
-              </dl>
-            </Section>
-          )}
 
           {/* Fees — editable list, not just the first one (plan §19) */}
           <Section title="Fees">
@@ -351,99 +281,99 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
             </Section>
           )}
 
-          {/* Valuation provenance + manual price entry */}
-          <Section title="Price provenance">
+          {/* Price + manual correction */}
+          <Section title="Price">
             <PriceEditor eventId={eventId} event={event} valuations={data.valuations} onChange={async () => { await load(); notifyChange(); }} />
-          </Section>
-
-          <Section title="Linked events">
-            <LinksEditor eventId={eventId} links={data.links} onChange={async () => { await load(); notifyChange(); }} />
-          </Section>
-
-          {/* Notes */}
-          <Section title="Notes">
-            <p className="text-sm text-soft">{event.notes || "No notes recorded."}</p>
           </Section>
 
           <div className="border-t border-line pt-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h4 className="font-mono text-[10px] uppercase tracking-widest text-faint">Activity actions</h4>
-                <p className="mt-1 text-xs text-soft">Modify this record or permanently remove it.</p>
+                <p className="mt-1 text-xs text-soft">Modify this record, hide a junk asset, or permanently remove the record.</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="secondary" onClick={() => void toggleInternalTransfer()}>{data.event.internal_transfer ? "Remove internal mark" : "Mark as internal"}</Button>
+                {!event.asset_blocked && <Button size="sm" variant="secondary" onClick={() => void blockAsset(event.asset_id, event.asset_symbol)} loading={blockingAsset === event.asset_id}>Block {event.asset_symbol}</Button>}
+                {event.secondary_asset_id !== null && event.secondary_asset_symbol && !event.secondary_asset_blocked && <Button size="sm" variant="secondary" onClick={() => void blockAsset(event.secondary_asset_id!, event.secondary_asset_symbol!)} loading={blockingAsset === event.secondary_asset_id}>Block {event.secondary_asset_symbol}</Button>}
                 <Button size="sm" variant="secondary" onClick={() => setEditDialogOpen(true)} icon={<PencilLine size={14} />}>Modify activity</Button>
                 <Button size="sm" variant="danger" onClick={() => void deleteEvent()} icon={<Trash2 size={14} />} loading={deleting}>Delete activity</Button>
               </div>
             </div>
           </div>
 
-          {data.overrides.length > 0 && (
-            <Section title="Override history">
-              <div className="space-y-2">
-                {data.overrides.map((override, index) => (
-                  <div key={index} className="rounded-lg border border-line px-3 py-2.5 text-xs">
-                    <p className="font-semibold text-ink">{FIELD_LABELS[override.field as EditableEventField] ?? formatType(override.field)}</p>
-                    <p className="mt-1 text-soft">
-                      {override.old_value || "—"} <span className="text-faint">→</span> {override.new_value || "—"}
-                    </p>
-                    <p className="mt-1 text-faint">
-                      {formatDateTime(override.changed_at)}
-                      {override.reason ? ` · ${override.reason}` : ""}
-                    </p>
-                    {isRestorable(data, override.field) && (
-                      <div className="mt-2 flex items-center gap-2">
-                        <Button size="sm" variant="ghost" icon={<Eye size={12} />} onClick={() => setShownOriginalField((current) => current === override.field ? null : override.field)}>
-                          View original
-                        </Button>
-                        <Button size="sm" variant="ghost" icon={<RotateCcw size={12} />} loading={restoringField === override.field} onClick={() => void restoreAutomaticValue(override.field)}>
-                          Restore automatic
-                        </Button>
+          <details className="border-t border-line pt-5">
+            <summary className="cursor-pointer list-none font-mono text-[10px] uppercase tracking-widest text-faint">Audit data</summary>
+            <div className="mt-3 space-y-5">
+              {data.overrides.length > 0 && (
+                <div>
+                  <h4 className="font-mono text-[10px] uppercase tracking-widest text-faint">Corrections</h4>
+                  <div className="mt-3 space-y-2">
+                    {data.overrides.map((override, index) => (
+                      <div key={index} className="rounded-lg border border-line px-3 py-2.5 text-xs">
+                        <p className="font-semibold text-ink">{FIELD_LABELS[override.field as EditableEventField] ?? formatType(override.field)}</p>
+                        <p className="mt-1 text-soft">
+                          {override.old_value || "—"} <span className="text-faint">→</span> {override.new_value || "—"}
+                        </p>
+                        <p className="mt-1 text-faint">
+                          {formatDateTime(override.changed_at)}
+                          {override.reason ? ` · ${override.reason}` : ""}
+                        </p>
+                        {isRestorable(data, override.field) && (
+                          <div className="mt-2 flex items-center gap-2">
+                            <Button size="sm" variant="ghost" icon={<Eye size={12} />} onClick={() => setShownOriginalField((current) => current === override.field ? null : override.field)}>
+                              View original
+                            </Button>
+                            <Button size="sm" variant="ghost" icon={<RotateCcw size={12} />} loading={restoringField === override.field} onClick={() => void restoreAutomaticValue(override.field)}>
+                              Restore automatic
+                            </Button>
+                          </div>
+                        )}
+                        {shownOriginalField === override.field && <p className="mt-2 rounded bg-base px-2 py-1.5 text-[11px] text-soft">Original automatic value: {data.original_values[override.field] || "—"}</p>}
                       </div>
-                    )}
-                    {shownOriginalField === override.field && <p className="mt-2 rounded bg-base px-2 py-1.5 text-[11px] text-soft">Original automatic value: {data.original_values[override.field] || "—"}</p>}
-                  </div>
-                ))}
-              </div>
-            </Section>
-          )}
-
-          {/* Raw evidence */}
-          <Section title="Raw evidence">
-            {data.raw ? (
-              <div className="space-y-2">
-                <div className="flex items-start gap-2.5 rounded-lg bg-base px-3 py-3">
-                  <Fingerprint size={14} className="mt-0.5 shrink-0 text-faint" />
-                  <div className="min-w-0">
-                    <p className="font-mono text-[10px] uppercase tracking-wide text-faint">SHA-256 payload</p>
-                    <CopyableValue text={data.raw.payload_hash}>
-                      <span className="mt-1 break-all font-mono text-[10px] text-soft">{data.raw.payload_hash}</span>
-                    </CopyableValue>
+                    ))}
                   </div>
                 </div>
-                <p className="text-[11px] text-faint">Normalizer {event.normalizer_version || data.raw.connector_version}</p>
-                <dl className="grid grid-cols-1 gap-x-4 gap-y-3 text-xs sm:grid-cols-2">
-                  <DetailRow label="Source" value={data.raw.source_id} copyText={data.raw.source_id} />
-                  <DetailRow label="External ID" value={<span className="font-mono text-[10px]">{data.raw.external_id}</span>} copyText={data.raw.external_id} wide />
-                  <DetailRow label="Imported" value={formatDateTime(data.raw.received_at)} />
-                  <DetailRow label="Original timestamp" value={data.raw.source_timestamp ? formatDateTime(data.raw.source_timestamp) : "—"} />
-                  {data.raw.source_timezone && <DetailRow label="Source timezone" value={data.raw.source_timezone} />}
-                  {data.raw.source_reference && <DetailRow label="Source reference" value={<span className="font-mono text-[10px]">{data.raw.source_reference}</span>} copyText={data.raw.source_reference} wide />}
-                </dl>
-                <Button size="sm" variant="secondary" icon={<Eye size={13} />} onClick={() => setShowRawPayload((visible) => !visible)}>{showRawPayload ? "Hide original record" : "View original record"}</Button>
-                {showRawPayload && <pre className="max-h-72 overflow-auto rounded-lg bg-base p-3 text-[10px] leading-relaxed text-soft">{JSON.stringify(data.raw.payload, null, 2)}</pre>}
+              )}
+
+              <div className={cx(data.overrides.length > 0 && "border-t border-line pt-5")}>
+                <h4 className="font-mono text-[10px] uppercase tracking-widest text-faint">Raw evidence</h4>
+                <div className="mt-3">
+                  {data.raw ? (
+                    <div className="space-y-2">
+                      <div className="flex items-start gap-2.5 rounded-lg bg-base px-3 py-3">
+                        <Fingerprint size={14} className="mt-0.5 shrink-0 text-faint" />
+                        <div className="min-w-0">
+                          <p className="font-mono text-[10px] uppercase tracking-wide text-faint">SHA-256 payload</p>
+                          <CopyableValue text={data.raw.payload_hash}>
+                            <span className="mt-1 break-all font-mono text-[10px] text-soft">{data.raw.payload_hash}</span>
+                          </CopyableValue>
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-faint">Normalizer {event.normalizer_version || data.raw.connector_version}</p>
+                      <dl className="grid grid-cols-1 gap-x-4 gap-y-3 text-xs sm:grid-cols-2">
+                        <DetailRow label="Source" value={data.raw.source_id} copyText={data.raw.source_id} />
+                        <DetailRow label="External ID" value={<span className="font-mono text-[10px]">{data.raw.external_id}</span>} copyText={data.raw.external_id} wide />
+                        <DetailRow label="Imported" value={formatDateTime(data.raw.received_at)} />
+                        <DetailRow label="Original timestamp" value={data.raw.source_timestamp ? formatDateTime(data.raw.source_timestamp) : "—"} />
+                        {data.raw.source_timezone && <DetailRow label="Source timezone" value={data.raw.source_timezone} />}
+                        {data.raw.source_reference && <DetailRow label="Source reference" value={<span className="font-mono text-[10px]">{data.raw.source_reference}</span>} copyText={data.raw.source_reference} wide />}
+                      </dl>
+                      <Button size="sm" variant="secondary" icon={<Eye size={13} />} onClick={() => setShowRawPayload((visible) => !visible)}>{showRawPayload ? "Hide original record" : "View original record"}</Button>
+                      {showRawPayload && <pre className="max-h-72 overflow-auto rounded-lg bg-base p-3 text-[10px] leading-relaxed text-soft">{JSON.stringify(data.raw.payload, null, 2)}</pre>}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-soft">No raw source payload for this record.</p>
+                  )}
+                  {event.modified && (
+                    <p className="mt-3 inline-flex items-center gap-1.5 text-[11px] text-warn">
+                      <PencilLine size={12} />
+                      Corrected activity · original evidence remains unchanged
+                    </p>
+                  )}
+                </div>
               </div>
-            ) : (
-              <p className="text-xs text-soft">No raw source payload for this record.</p>
-            )}
-            {event.modified && (
-              <p className="mt-3 inline-flex items-center gap-1.5 text-[11px] text-warn">
-                <PencilLine size={12} />
-                Modified manually · original evidence remains unchanged
-              </p>
-            )}
-          </Section>
+            </div>
+          </details>
         </div>
       )}
       {editDialogOpen && data && <ManualEventDialog editEvent={data} onClose={() => setEditDialogOpen(false)} onSaved={async () => { setEditDialogOpen(false); await load(); notifyChange(); }} />}
@@ -637,42 +567,6 @@ function FeesEditor({ eventId, fees, onChange }: { eventId: number; fees: EventD
       )}
     </div>
   );
-}
-
-function LinksEditor({ eventId, links, onChange }: { eventId: number; links: EventDetail["links"]; onChange: () => Promise<void> }) {
-  const [relatedId, setRelatedId] = useState("");
-  const [relationshipType, setRelationshipType] = useState("RELATED");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const addLink = async () => {
-    setBusy(true); setError("");
-    try {
-      await postJson(`/api/events/${eventId}/links`, { linked_event_id: Number(relatedId), relationship_type: relationshipType });
-      setRelatedId("");
-      await onChange();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not link events");
-    } finally { setBusy(false); }
-  };
-  const removeLink = async (linkId: number) => {
-    setBusy(true); setError("");
-    try { await deleteJson(`/api/events/${eventId}/links/${linkId}`); await onChange(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not remove link"); }
-    finally { setBusy(false); }
-  };
-  return <div className="space-y-2">
-    {links.length === 0 && <p className="text-xs text-soft">No linked events. Link the other leg of a transfer, bridge, swap, or protocol action.</p>}
-    {links.map((link) => <div key={link.id} className="flex items-center justify-between gap-3 rounded-lg border border-line px-3 py-2.5 text-xs">
-      <div className="min-w-0"><p className="font-medium text-ink"><Link2 size={12} className="mr-1 inline text-accent" />{formatType(link.relationship_type)} · Event #{link.event_id}</p><p className="mt-0.5 text-faint">{formatType(link.event_type)} · {link.amount} {link.asset_symbol} · {link.provenance}</p></div>
-      <button onClick={() => void removeLink(link.id)} disabled={busy} aria-label="Remove event link" className="shrink-0 rounded-lg p-1.5 text-faint transition-colors hover:bg-bad-soft hover:text-bad disabled:opacity-50"><Trash2 size={13} /></button>
-    </div>)}
-    <div className="grid gap-2 rounded-lg border border-dashed border-line p-3 sm:grid-cols-[1fr_1fr_auto]">
-      <Input value={relatedId} onChange={(event) => setRelatedId(event.target.value)} placeholder="Related event ID" inputMode="numeric" aria-label="Related event ID" />
-      <Select value={relationshipType} onChange={(event) => setRelationshipType(event.target.value)} aria-label="Relationship type"><option value="RELATED">Related</option><option value="INTERNAL_TRANSFER">Internal transfer</option><option value="SWAP_LEG">Swap leg</option><option value="BRIDGE">Bridge</option><option value="FEE_FOR">Fee for</option><option value="PROTOCOL_ACTION">Protocol action</option></Select>
-      <Button size="sm" variant="secondary" icon={<Link2 size={13} />} onClick={() => void addLink()} loading={busy} disabled={!relatedId}>Link</Button>
-    </div>
-    {error && <p className="text-[11px] text-bad">{error}</p>}
-  </div>;
 }
 
 function PriceEditor({ eventId, event, valuations, onChange }: { eventId: number; event: EventDetail["event"]; valuations: EventDetail["valuations"]; onChange: () => Promise<void> }) {

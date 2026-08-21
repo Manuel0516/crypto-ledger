@@ -125,7 +125,8 @@ class LightningConnector:
                 # duplicate-key render bug whenever both were connected.
                 asset_symbol="BTC",
                 amount=_msat_to_btc(value_msat),
-                source_label=self.account_label,
+                account_name=self.account_label,
+                address_to=payload.get("destination") or payload.get("payee") or payload.get("destination_pubkey"),
                 notes=f"Lightning payment · {payload.get('payment_hash', '')[:16]}",
                 fees=fees,
                 tx_hash=payload.get("payment_hash"),
@@ -153,7 +154,7 @@ class LightningConnector:
                 # duplicate-key render bug whenever both were connected.
                 asset_symbol="BTC",
                 amount=_msat_to_btc(value_msat),
-                source_label=self.account_label,
+                account_name=self.account_label,
                 notes=f"Lightning invoice settled{' · ' + payload['memo'] if payload.get('memo') else ''}",
                 tx_hash=payload.get("r_hash"),
             )
@@ -180,8 +181,8 @@ class LightningConnector:
                 # duplicate-key render bug whenever both were connected.
                 asset_symbol="BTC",
                 amount=f"{capacity_sat / 1e8:.8f}",
-                source_label=self.account_label,
-                counterparty=payload.get("remote_pubkey"),
+                account_name=self.account_label,
+                address_to=payload.get("remote_pubkey"),
                 notes=(
                     f"Channel opened · funding {payload.get('channel_point', '')} — "
                     "not reconciled against the on-chain funding tx if you also track this wallet's Bitcoin address"
@@ -200,8 +201,8 @@ class LightningConnector:
             original_timestamp=occurred_at.isoformat(),
             asset_symbol="BTC",  # see the on-chain-unification note above
             amount=f"{settled_sat / 1e8:.8f}",
-            source_label=self.account_label,
-            counterparty=payload.get("remote_pubkey"),
+            account_name=self.account_label,
+            address_to=payload.get("remote_pubkey"),
             notes=f"Channel closed · {payload.get('closing_tx_hash', '')}",
             tx_hash=payload.get("closing_tx_hash"),
         )

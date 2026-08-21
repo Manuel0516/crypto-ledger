@@ -26,6 +26,18 @@ export interface AccountHolding {
   balances: AssetHolding[];
 }
 
+export interface AssetVisibility {
+  id: number;
+  symbol: string;
+  name: string;
+  asset_type: string;
+  network: string | null;
+  contract_address: string | null;
+  is_blocked: boolean;
+  spam_suspected: boolean;
+  event_count: number;
+}
+
 export interface OverviewData {
   portfolio_eur: number;
   portfolio_sek: number;
@@ -53,6 +65,7 @@ export interface PriceHistory {
 /* Events */
 export interface EventSummary {
   id: number;
+  asset_id: number;
   occurred_at: string;
   event_type: string;
   event_subtype: string | null;
@@ -60,15 +73,17 @@ export interface EventSummary {
   status: string;
   primary_amount: string;
   asset_symbol: string;
+  asset_blocked: boolean;
   network: string | null;
+  secondary_asset_id: number | null;
   secondary_asset_symbol: string | null;
   secondary_amount: string | null;
-  source_label: string;
-  destination_label: string | null;
-  counterparty: string | null;
+  secondary_asset_blocked: boolean;
+  account_name: string | null;
   address_from: string | null;
   address_to: string | null;
-  notes: string | null;
+  address_from_label: string | null;
+  address_to_label: string | null;
   provenance: string;
   normalizer_version: string;
   source_id: string | null;
@@ -85,10 +100,6 @@ export interface EventSummary {
   is_internal: boolean;
   internal_transfer: boolean;
   linked_event_count: number;
-  description: string | null;
-  merchant: string | null;
-  tags: string[];
-  evidence_reference: string | null;
   tx_hash: string | null;
   block_hash: string | null;
   contract_address: string | null;
@@ -199,16 +210,8 @@ export interface EventLink {
 export const EDITABLE_EVENT_FIELDS = [
   "event_type",
   "event_subtype",
-  "source_label",
-  "destination_label",
-  "counterparty",
-  "description",
-  "merchant",
-  "tags_json",
-  "evidence_reference",
   "address_from",
   "address_to",
-  "notes",
   "primary_amount",
   "secondary_amount",
   "occurred_at",
@@ -222,40 +225,6 @@ export const EDITABLE_EVENT_FIELDS = [
 ] as const;
 
 export type EditableEventField = (typeof EDITABLE_EVENT_FIELDS)[number];
-
-export interface ManualEventInput {
-  event_type: string;
-  event_subtype?: string | null;
-  symbol: string;
-  asset_network?: string | null;
-  amount: string;
-  secondary_symbol?: string | null;
-  secondary_asset_network?: string | null;
-  secondary_amount?: string | null;
-  occurred_at: string;
-  account_id?: number | null;
-  source_label: string;
-  destination_label?: string | null;
-  counterparty?: string | null;
-  description?: string | null;
-  merchant?: string | null;
-  tags?: string[];
-  evidence_reference?: string | null;
-  source_timezone?: string | null;
-  address_from?: string | null;
-  address_to?: string | null;
-  notes?: string | null;
-  tx_hash?: string | null;
-  order_id?: string | null;
-  trade_id?: string | null;
-  deposit_id?: string | null;
-  withdrawal_id?: string | null;
-  fee_asset?: string | null;
-  fee_amount?: string | null;
-  fee_type?: string;
-  eur_value?: string | null;
-  sek_value?: string | null;
-}
 
 /* Accounts */
 export type ConnectorType =
@@ -290,6 +259,9 @@ export interface Account {
   wallet_software: string | null;
   note: string | null;
   last_sync: string | null;
+  balance_synced_at: string | null;
+  balances: Array<{ wallet_label: string; symbol: string; network: string | null; contract_address: string | null; amount: string }>;
+  fees: Array<{ symbol: string; network: string | null; amount: string; count: number }>;
   archived_at: string | null;
   paused: boolean;
   event_count: number;
@@ -334,6 +306,7 @@ export interface AppSettings {
   valuation_currencies: string[];
   price_provider: string;
   price_provider_api_key_configured: boolean;
+  explorer_api_keys_configured: Record<string, boolean>;
   price_timeout_seconds: number;
   backup_hour_utc: number;
   backup_verify_after_create: boolean;
@@ -377,6 +350,10 @@ export interface Readiness {
   raw_evidence: number;
   prices: number;
   unresolved_issues: number;
+  activity_count: number;
+  priced_activity_count: number;
+  warning_count: number;
+  incomplete_activity_count: number;
   ready: boolean;
 }
 
@@ -417,6 +394,10 @@ export interface TaxReadiness {
   unsynced_source_count: number;
   unpriced_fee_count: number;
   missing_raw_evidence_count: number;
+  activity_count: number;
+  priced_activity_count: number;
+  warning_count: number;
+  incomplete_activity_count: number;
   ready: boolean;
   issues: TaxReadinessIssue[];
 }
@@ -477,7 +458,8 @@ export interface TaxEventScheduleRow {
   amount: string;
   secondary_asset: string | null;
   secondary_amount: string | null;
-  counterparty: string | null;
+  source_wallet: string | null;
+  destination_wallet: string | null;
 }
 
 export interface TaxReconciliationSummary {
@@ -515,6 +497,8 @@ export interface TaxCalculationSummary {
   event_schedule_rows: TaxEventScheduleRow[];
   event_schedule_total: number;
   reconciliation: TaxReconciliationSummary | null;
+  included_activity_count: number;
+  schedule_only_activity_count: number;
 }
 
 export interface TaxReport {

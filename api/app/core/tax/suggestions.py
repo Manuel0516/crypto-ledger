@@ -31,21 +31,17 @@ def suggest_reclassification(event: "EffectiveEvent", account_names: set[str]) -
     if event.secondary_asset_id and event.secondary_amount:
         return Suggestion("SWAP", "a second asset/amount is recorded on this event, which only a swap has")
 
-    destination = event.destination_label
-    counterparty = event.counterparty
-
+    destination = event.address_to
     if event.direction == "-":
         if destination and destination in account_names:
             return Suggestion("TRANSFER", f"the destination ('{destination}') matches one of your own linked accounts")
-        if counterparty:
-            return Suggestion("PAYMENT", f"a counterparty ('{counterparty}') is recorded with an outgoing amount")
+        if destination:
+            return Suggestion("PAYMENT", f"a destination wallet ('{destination}') is recorded with an outgoing amount")
         if event.address_to:
             return Suggestion("WITHDRAWAL", "a destination address is recorded with an outgoing amount")
         return None
 
     if event.direction == "+":
-        if counterparty:
-            return Suggestion("GIFT_RECEIVED", f"a counterparty ('{counterparty}') is recorded with an incoming amount")
         if event.address_from:
             return Suggestion("DEPOSIT", "a source address is recorded with an incoming amount")
         return None

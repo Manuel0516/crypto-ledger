@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, ChevronRight, FileSpreadsheet, FileText, Landmark, Link2, Paperclip, ShieldCheck, Sparkles, Upload } from "lucide-react";
+import { AlertTriangle, ChevronRight, FileSpreadsheet, FileText, Landmark, Paperclip, ShieldCheck, Upload } from "lucide-react";
 import type { AppSettings, Attachment, TaxCountry, TaxLanguage, TaxReadiness, TaxReport } from "../../types";
 import { formatType } from "../../types";
 import { deleteJson, getJson, patchJson, postJson, triggerDownload, uploadFileWithFields } from "../../lib/api";
@@ -59,14 +59,6 @@ export function TaxSection({ onOpenEvent }: TaxSectionProps) {
 
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
-  const [acknowledgeBlocking, setAcknowledgeBlocking] = useState(false);
-  useEffect(() => {
-    // Never carry an acknowledgment across a different country/year — each
-    // one has its own set of blocking issues, and reusing the checkbox
-    // state would silently skip confirming for a report the user hasn't
-    // actually looked at yet.
-    setAcknowledgeBlocking(false);
-  }, [country, year]);
 
   const persistPicker = async (nextCountry: string, nextYear: number, nextName: string, nextLanguage: string) => {
     await patchJson("/api/settings", { default_country: nextCountry, default_tax_year: nextYear, taxpayer_name: nextName || null, default_language: nextLanguage });
@@ -95,11 +87,9 @@ export function TaxSection({ onOpenEvent }: TaxSectionProps) {
         country,
         tax_year: year,
         language,
-        acknowledge_blocking_issues: acknowledgeBlocking,
       });
       setActiveReport(report);
       await refreshHistory();
-      setAcknowledgeBlocking(false);
     } catch (reason) {
       setGenError(reason instanceof Error ? reason.message : "Could not generate the report");
     } finally {
@@ -107,20 +97,8 @@ export function TaxSection({ onOpenEvent }: TaxSectionProps) {
     }
   };
 
-  const applySuggestion = async (eventId: number, eventType: string) => {
-    await patchJson(`/api/events/${eventId}`, { field: "event_type", value: eventType, reason: "Applied tax-report reclassification suggestion" });
-    await refreshReadiness();
-  };
-
-  const applyLink = async (eventId: number, linkedEventId: number) => {
-    await postJson(`/api/events/${eventId}/links`, { linked_event_id: linkedEventId, relationship_type: "INTERNAL_TRANSFER" });
-    await refreshReadiness();
-  };
-
   const selectedCountry = countries?.find((c) => c.code === country);
   const currency = (selectedCountry?.currency ?? "EUR") as "EUR" | "SEK";
-  const blockingIssues = readiness?.issues.filter((i) => i.severity === "blocking") ?? [];
-  const warningIssues = readiness?.issues.filter((i) => i.severity === "warning") ?? [];
 
   return (
     <div className="space-y-8">
@@ -184,53 +162,30 @@ export function TaxSection({ onOpenEvent }: TaxSectionProps) {
                   {readiness.ready ? <ShieldCheck size={20} /> : <AlertTriangle size={20} />}
                 </span>
                 <div>
-                  <h4 className="text-sm font-semibold text-ink">{readiness.ready ? "Ready to report" : "Not ready"}</h4>
-                  <p className="mt-0.5 text-xs text-soft">{readiness.event_count} events in {year}</p>
+                  <h4 className="text-sm font-semibold text-ink">Ready to report</h4>
+                  <p className="mt-0.5 text-xs text-soft">{readiness.activity_count ?? readiness.event_count} activities in {year}</p>
                 </div>
               </div>
-              <Badge tone={readiness.ready ? "success" : "warning"}>{readiness.ready ? "Ready" : "Blocked"}</Badge>
+              <Badge tone="success">Ready</Badge>
             </div>
 
-            {blockingIssues.length > 0 && (
-              <div className="mt-4 space-y-2 border-t border-line pt-4">
-                {blockingIssues.map((issue, i) => (
-                  <IssueRow key={i} issue={issue} onOpenEvent={onOpenEvent} onApplySuggestion={applySuggestion} onApplyLink={applyLink} />
-                ))}
-              </div>
-            )}
-            {warningIssues.length > 0 && (
+            {readiness.issues.length > 0 && (
               <div className="mt-3 space-y-2 border-t border-line pt-3">
-                {warningIssues.map((issue, i) => (
-                  <IssueRow key={i} issue={issue} onOpenEvent={onOpenEvent} onApplySuggestion={applySuggestion} onApplyLink={applyLink} />
+                {readiness.issues.map((issue, i) => (
+                  <IssueRow key={i} issue={issue} onOpenEvent={onOpenEvent} />
                 ))}
               </div>
-            )}
-
-            {!readiness.ready && blockingIssues.length > 0 && (
-              <label className="mt-4 flex cursor-pointer items-start gap-2.5 rounded-lg border border-warn/30 bg-warn-soft px-3 py-2.5">
-                <input
-                  type="checkbox"
-                  checked={acknowledgeBlocking}
-                  onChange={(e) => setAcknowledgeBlocking(e.target.checked)}
-                  className="mt-0.5 size-3.5 accent-warn"
-                />
-                <span className="text-xs text-ink">
-                  I understand {blockingIssues.length} blocking issue{blockingIssues.length === 1 ? "" : "s"} above may make this report incomplete or
-                  misclassified — generate anyway. This choice is recorded permanently in the report itself.
-                </span>
-              </label>
             )}
 
             <div className="mt-4 flex flex-wrap items-center gap-2.5 border-t border-line pt-4">
               <Button size="sm" variant="ghost" onClick={() => void refreshReadiness()}>Re-check</Button>
               <Button
                 size="sm"
-                variant={readiness.ready ? "primary" : "danger"}
-                disabled={!readiness.ready && !acknowledgeBlocking}
+                variant="primary"
                 loading={generating}
                 onClick={() => void generate()}
               >
-                {readiness.ready ? "Generate tax report" : "Generate anyway"}
+                Generate tax report
               </Button>
               {genError && <span className="text-xs text-bad">{genError}</span>}
             </div>
@@ -389,41 +344,13 @@ function AttachmentsPanel() {
 function IssueRow({
   issue,
   onOpenEvent,
-  onApplySuggestion,
-  onApplyLink,
 }: {
   issue: TaxReadiness["issues"][number];
   onOpenEvent: (id: number) => void;
-  onApplySuggestion: (eventId: number, eventType: string) => Promise<void>;
-  onApplyLink: (eventId: number, linkedEventId: number) => Promise<void>;
 }) {
-  const [applying, setApplying] = useState(false);
-  const apply = async () => {
-    if (issue.event_id === null || !issue.suggested_event_type) return;
-    setApplying(true);
-    try {
-      await onApplySuggestion(issue.event_id, issue.suggested_event_type);
-    } finally {
-      setApplying(false);
-    }
-  };
-  const link = async () => {
-    if (issue.event_id === null || !issue.suggested_link_event_id) return;
-    setApplying(true);
-    try {
-      await onApplyLink(issue.event_id, issue.suggested_link_event_id);
-    } finally {
-      setApplying(false);
-    }
-  };
-
   return (
     <div className="flex items-start gap-2.5 text-xs">
-      {issue.suggested_event_type || issue.suggested_link_event_id ? (
-        <Sparkles size={14} className="mt-0.5 shrink-0 text-accent" />
-      ) : (
-        <AlertTriangle size={14} className={cx("mt-0.5 shrink-0", issue.severity === "blocking" ? "text-bad" : "text-warn")} />
-      )}
+      <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warn" />
       <div className="min-w-0 flex-1">
         <p className="font-medium text-ink">{issue.title}</p>
         <p className="mt-0.5 text-soft">{issue.detail}</p>
@@ -432,16 +359,6 @@ function IssueRow({
             <button onClick={() => onOpenEvent(issue.event_id as number)} className="font-medium text-accent hover:underline">
               Open event #{issue.event_id} →
             </button>
-          )}
-          {issue.suggested_event_type && (
-            <Button size="sm" variant="accent-soft" loading={applying} onClick={() => void apply()}>
-              Apply: reclassify as {formatType(issue.suggested_event_type)}
-            </Button>
-          )}
-          {issue.suggested_link_event_id && (
-            <Button size="sm" variant="accent-soft" icon={<Link2 size={12} />} loading={applying} onClick={() => void link()}>
-              Link to event #{issue.suggested_link_event_id} ({issue.suggested_link_confidence} confidence)
-            </Button>
           )}
         </div>
       </div>
@@ -491,13 +408,14 @@ function ReportSummary({ report, currency }: { report: TaxReport; currency: "EUR
         </div>
       </Card>
 
-      {summary.reconciliation && (
+      {(summary.included_activity_count !== undefined || summary.schedule_only_activity_count !== undefined) && (
         <Card>
-          <h4 className="mb-2 text-xs font-semibold text-ink">Reconciliation status</h4>
-          <div className="grid grid-cols-3 gap-4 text-center">
-            <Stat label="Linked transfers" value={summary.reconciliation.linked_transfer_count} />
-            <Stat label="Unresolved issues" value={summary.reconciliation.unresolved_issue_count} />
-            <Stat label="Manual events" value={summary.reconciliation.manual_event_count} />
+          <h4 className="mb-2 text-xs font-semibold text-ink">Activity coverage</h4>
+          <div className="grid grid-cols-2 gap-4 text-center sm:grid-cols-4">
+            <Stat label="Activities included" value={summary.included_activity_count ?? 0} />
+            <Stat label="Schedule only" value={summary.schedule_only_activity_count ?? 0} />
+            <Stat label="Activities shown" value={summary.event_schedule_total} />
+            <Stat label="Warnings" value={summary.warnings.length} />
           </div>
         </Card>
       )}
@@ -592,8 +510,8 @@ function ReportSummary({ report, currency }: { report: TaxReport; currency: "EUR
         <div>
           <TaxTable
             title="Detailed event schedule"
-            headers={["Date", "Type", "Asset", "Amount", "Counterparty"]}
-            rows={summary.event_schedule_rows.map((row) => [row.occurred_at.slice(0, 10), formatType(row.event_type), row.asset, row.amount, row.counterparty ?? "—"])}
+            headers={["Date", "Type", "Asset", "Amount", "From wallet", "To wallet"]}
+            rows={summary.event_schedule_rows.map((row) => [row.occurred_at.slice(0, 10), formatType(row.event_type), row.asset, row.amount, row.source_wallet ?? "—", row.destination_wallet ?? "—"])}
           />
           {summary.event_schedule_total > summary.event_schedule_rows.length && (
             <p className="mt-2 text-[11px] text-faint">

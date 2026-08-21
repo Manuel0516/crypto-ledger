@@ -1,3 +1,23 @@
+import {
+  TokenADA,
+  TokenBCH,
+  TokenBNB,
+  TokenBTC,
+  TokenDOGE,
+  TokenDOT,
+  TokenETH,
+  TokenFDUSD,
+  TokenLINK,
+  TokenLTC,
+  TokenMATIC,
+  TokenSOL,
+  TokenUNI,
+  TokenUSDC,
+  TokenUSDT,
+  TokenWBETH,
+  TokenXMR,
+  TokenXRP,
+} from "@web3icons/react";
 import { cx } from "../../lib/format";
 
 const KNOWN_SYMBOLS: Record<string, string> = {
@@ -48,20 +68,52 @@ const sizes = {
   xl: "size-14 text-xl rounded-2xl",
 };
 
-export function AssetIcon({ symbol, size = "md", className }: AssetIconProps) {
-  const glyph = KNOWN_SYMBOLS[symbol] ?? symbol.slice(0, 1);
-  const color = KNOWN_COLORS[symbol];
+const TOKEN_ICONS = {
+  ADA: TokenADA,
+  BCH: TokenBCH,
+  BNB: TokenBNB,
+  BTC: TokenBTC,
+  DOGE: TokenDOGE,
+  DOT: TokenDOT,
+  ETH: TokenETH,
+  FDUSD: TokenFDUSD,
+  LINK: TokenLINK,
+  LTC: TokenLTC,
+  MATIC: TokenMATIC,
+  SOL: TokenSOL,
+  UNI: TokenUNI,
+  USDC: TokenUSDC,
+  USDT: TokenUSDT,
+  WBETH: TokenWBETH,
+  XMR: TokenXMR,
+  XRP: TokenXRP,
+};
 
-  if (color) {
+export function AssetIcon({ symbol, size = "md", className }: AssetIconProps) {
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const glyph = KNOWN_SYMBOLS[normalizedSymbol] ?? normalizedSymbol.slice(0, 1);
+  const color = KNOWN_COLORS[normalizedSymbol];
+  const fallback = (
+    <span
+      className={cx(
+        "grid size-full place-items-center font-bold",
+        color ? "text-white shadow-sm" : "bg-accent-soft text-accent",
+      )}
+      style={color ? { backgroundColor: color } : undefined}
+    >
+      {glyph}
+    </span>
+  );
+  const Token = TOKEN_ICONS[normalizedSymbol as keyof typeof TOKEN_ICONS];
+  const iconClass = cx("grid shrink-0 place-items-center overflow-hidden", sizes[size], className);
+
+  if (Token) {
     return (
-      <span
-        className={cx("grid shrink-0 place-items-center font-bold text-white shadow-sm", sizes[size], className)}
-        style={{ backgroundColor: color }}
-      >
-        {glyph}
+      <span className={iconClass}>
+        <Token variant="background" size="100%" className="size-full" />
       </span>
     );
   }
 
-  return <span className={cx("grid shrink-0 place-items-center font-bold text-accent bg-accent-soft", sizes[size], className)}>{glyph}</span>;
+  return <span className={cx(iconClass, !color && "bg-accent-soft")}>{fallback}</span>;
 }

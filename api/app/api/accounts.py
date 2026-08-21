@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -12,7 +13,7 @@ from app.connectors.evm.connector import CHAINS
 from app.core.ledger.connectors import build_connector
 from app.core.ledger.reconcile import ReconcileResult, reconcile_account
 from app.core.ledger.sync import SYNCABLE_TYPES, SyncResult, sync_account
-from app.db.models import Account, Event
+from app.db.models import Account, AccountBalance, Asset, Event, Fee
 from app.security.secrets import decrypt_config, encrypt_config
 
 from .deps import get_session
@@ -21,16 +22,16 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 _EVM_ADDRESS = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
-# connector_type -> coarse UI grouping kind
+# connector_type -> coarse UI grouping kind. Lightning and Monero are
+# deliberately not addable here (too complex for this app's current scope) —
+# any account created before this restriction keeps working via
+# build_connector, this only blocks creating new ones.
 _DEFAULT_KIND = {
     "manual": "manual",
     "exchange_import": "exchange",
     "bitcoin_address": "wallet",
     "evm_address": "wallet",
     "solana_address": "wallet",
-    "monero_rpc": "wallet",
-    "lightning_node": "wallet",
-    "lightning_nwc": "wallet",
     "bitget_live": "exchange",
     "binance_live": "exchange",
 }
@@ -65,7 +66,44 @@ def _validate_evm_config(chain_network: str | None, config: dict | None) -> None
 
 
 def _serialize(session: Session, account: Account) -> dict:
-    event_count = session.query(Event).filter(Event.account_id == account.id).count()
+    event_count = (
+        session.query(Event)
+        .join(Asset, Event.primary_asset_id == Asset.id)
+        .filter(Event.account_id == account.id, Asset.is_blocked.is_(False))
+        .count()
+    )
+    balances = [
+        {
+            "wallet_label": f"{account.name} - {asset.symbol}",
+            "symbol": asset.symbol,
+            "network": asset.network,
+            "contract_address": asset.contract_address,
+            "amount": balance.amount,
+        }
+        for balance, asset in (
+            session.query(AccountBalance, Asset)
+            .join(Asset, AccountBalance.asset_id == Asset.id)
+            .filter(AccountBalance.account_id == account.id, Asset.is_blocked.is_(False))
+            .order_by(Asset.symbol, Asset.network)
+            .all()
+        )
+    ]
+    fee_totals: dict[tuple[str, str | None], tuple[Decimal, int]] = {}
+    for fee, asset in (
+        session.query(Fee, Asset)
+        .join(Asset, Fee.fee_asset_id == Asset.id)
+        .join(Event, Fee.event_id == Event.id)
+        .filter(Event.account_id == account.id, Asset.is_blocked.is_(False))
+        .all()
+    ):
+        key = (asset.symbol, asset.network)
+        total, count = fee_totals.get(key, (Decimal("0"), 0))
+        total += Decimal(str(fee.fee_amount))
+        fee_totals[key] = (total, count + 1)
+    fees = [
+        {"symbol": symbol, "network": network, "amount": format(total, "f"), "count": count}
+        for (symbol, network), (total, count) in sorted(fee_totals.items())
+    ]
     evm_config = None
     if account.connector_type == "evm_address" and account.config_encrypted:
         try:
@@ -93,6 +131,9 @@ def _serialize(session: Session, account: Account) -> dict:
         "wallet_software": account.wallet_software,
         "note": account.note,
         "last_sync": account.last_sync.isoformat() if account.last_sync else None,
+        "balance_synced_at": account.balance_synced_at.isoformat() if account.balance_synced_at else None,
+        "balances": balances,
+        "fees": fees,
         "archived_at": account.archived_at.isoformat() if account.archived_at else None,
         "paused": account.paused,
         "event_count": event_count,
@@ -265,7 +306,7 @@ def nwc_permissions(account_id: int, session: Session = Depends(get_session)):
     account = session.get(Account, account_id)
     if account is None:
         raise HTTPException(404, "Account not found")
-    connector = build_connector(account)
+    connector = build_connector(account, session)
     permissions_fn = getattr(connector, "permissions", None) if connector else None
     if permissions_fn is None:
         return {"status": "unsupported", "methods": [], "extra_methods": [], "message": "This source doesn't report NWC permissions."}
@@ -327,8 +368,8 @@ def delete_account(account_id: int, confirm: bool = False, session: Session = De
     credentials. This is the explicit, harder-to-reach 'advanced operation'
     the plan calls for (§87) — everything else (archive) is reversible.
 
-    Historical events stay in the ledger: their account_id is cleared but
-    the event itself, its source_label, and its raw evidence are untouched.
+    Historical events stay in the ledger: their account_id is cleared while
+    their canonical from/to wallet values and raw evidence remain untouched.
     Financial history is never deleted just because a source connection is
     removed."""
     account = session.get(Account, account_id)

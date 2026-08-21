@@ -48,9 +48,9 @@ def render_tax_csv(result: TaxCalculationResult, language: str = DEFAULT_LANGUAG
         writer.writerow([row.event_id, row.field, row.old_value, row.new_value, row.changed_at.isoformat()])
 
     out.write(f"\n## {tr('schedule_section')}\n")
-    writer.writerow([tr("date"), tr("event_type"), tr("asset"), tr("quantity"), tr("counterparty")])
+    writer.writerow([tr("date"), tr("event_type"), tr("asset"), tr("quantity"), tr("from_account"), tr("to_account")])
     for row in result.event_schedule_rows:
-        writer.writerow([row.occurred_at.isoformat(), row.event_type, row.asset, row.amount, row.counterparty or ""])
+        writer.writerow([row.occurred_at.isoformat(), row.event_type, row.asset, row.amount, row.source_wallet or "", row.destination_wallet or ""])
 
     out.write(f"\n## {tr('totals')}\n")
     writer.writerow([tr("short_term"), result.total_short_term_gain])

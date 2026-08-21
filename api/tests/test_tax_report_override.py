@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -31,9 +30,7 @@ class GenerateReportOverrideTests(unittest.TestCase):
         btc = Asset(symbol="BTC", name="Bitcoin", asset_type="COIN", network="Bitcoin")
         self.session.add_all([account, btc])
         self.session.flush()
-        # An unlinked DEPOSIT with no counterpart — a genuine blocking
-        # "Unclassified transfer" readiness issue, deliberately left
-        # unresolved so these tests exercise the real gate.
+        # An unlinked DEPOSIT is a valid independent schedule activity.
         event = Event(
             external_id="ambiguous-deposit",
             account_id=account.id,
@@ -43,7 +40,7 @@ class GenerateReportOverrideTests(unittest.TestCase):
             occurred_at=OCCURRED_AT,
             primary_asset_id=btc.id,
             primary_amount="0.1",
-            source_label="Bitget",
+            address_from="Bitget",
             provenance="automatic",
             normalizer_version="test",
         )
@@ -60,23 +57,19 @@ class GenerateReportOverrideTests(unittest.TestCase):
         with patch("app.api.tax.TAX_REPORTS_DIR", self.reports_dir):
             return generate_report(body, self.session)
 
-    def test_a_blocking_issue_still_gates_generation_by_default(self) -> None:
-        with self.assertRaises(HTTPException) as ctx:
-            self._generate(acknowledge=False)
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertIn("resolve the blocking readiness issues first", ctx.exception.detail)
+    def test_unlinked_deposit_generates_without_acknowledgement(self) -> None:
+        report = self._generate(acknowledge=False)
+        self.assertEqual(report["status"], "complete")
 
-    def test_acknowledging_lets_generation_proceed_and_records_the_override(self) -> None:
+    def test_legacy_acknowledgement_field_is_ignored(self) -> None:
         report = self._generate(acknowledge=True)
         self.assertEqual(report["status"], "complete")
-        warnings = report["warnings"]
-        self.assertTrue(any("unresolved blocking readiness issue" in w for w in warnings))
-        self.assertTrue(any("Unclassified transfer" in w for w in warnings))
+        self.assertFalse(any("unresolved blocking readiness issue" in w for w in report["warnings"]))
+        self.assertFalse(any("Unclassified transfer" in w for w in report["warnings"]))
 
     def test_a_ready_year_ignores_the_flag_and_needs_no_override_note(self) -> None:
-        # A tax year with nothing blocking must generate identically whether
-        # or not acknowledge_blocking_issues is set — the flag only ever
-        # relaxes the gate, it never changes what gets calculated.
+        # A tax year with no activities also remains readable and the legacy
+        # acknowledgement field does not affect the result path.
         report = self._generate(acknowledge=True)
         # 2025 has no events at all, so it's trivially "ready".
         body = GenerateReportIn(country="GENERAL", tax_year=2025, acknowledge_blocking_issues=True)

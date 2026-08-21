@@ -90,7 +90,7 @@ The current connector surface includes:
 
 Connector availability depends on credentials, network access, rate limits, and account permissions. Never provide a seed phrase or private key to a connector; the linked-account UI is designed around public addresses and read-only exchange access where possible.
 
-EVM sources keep the selected network separate from the address. Empty explorer responses such as “No token transfers found” are treated as a successful empty history. Avalanche uses Routescan’s indexed API. For BNB Smart Chain, add an optional BSCTrace/MegaNode API key in the linked source to use indexed native BNB, internal, BEP-20, ERC-721/1155, and contract-call history plus current token holdings. Without a key, the app keeps a keyless public-RPC fallback for native balance and the default USDC/WBNB transfer logs, with the fallback’s coverage limits shown after sync. Existing Etherscan-compatible BSC configurations remain supported. Other EVM networks can be added with their chain ID and an Etherscan-compatible explorer endpoint.
+EVM sources keep the selected network separate from the address. Empty explorer responses such as “No token transfers found” are treated as a successful empty history. Avalanche uses Routescan’s indexed API. Explorer credentials are configured once in **Settings → Providers** and shared by compatible wallet sources. For BNB Smart Chain, an optional BSCTrace/MegaNode key enables indexed native BNB, internal, BEP-20, ERC-721/1155, and contract-call history plus current token holdings. Without a key, the app keeps a keyless public-RPC fallback for native balance and the default USDC/WBNB transfer logs, with the fallback’s coverage limits shown after sync. Existing per-source Etherscan-compatible BSC configurations remain supported. Other EVM networks can be added with their chain ID and an Etherscan-compatible explorer endpoint.
 
 ### Exchange history windows
 
@@ -170,7 +170,7 @@ Copy `.env.example` to `.env`. The active `.env` is ignored by Git and must neve
 | `APP_SECRET_KEY` | Application-level secret where supported by deployment | Generate and manage it as a deployment secret. |
 | `VITE_API_URL` | Web client API origin | Set it when the API is not on the local default. |
 
-Price-provider credentials are configured in **Settings → Price providers** and are stored through the application’s encrypted secret flow. They are not read from environment variables.
+Price-provider credentials are configured in **Settings → Providers** and are stored through the application’s encrypted secret flow. They are not read from environment variables.
 
 ## Backups and recovery
 

@@ -1,4 +1,12 @@
 import { useState } from "react";
+import {
+  ExchangeBinance,
+  ExchangeBitget,
+  NetworkBitcoin,
+  NetworkSolana,
+  TokenXMR,
+  WalletMetamask,
+} from "@web3icons/react";
 import { ChevronDown, ChevronUp, Plus, WalletCards } from "lucide-react";
 import type { Account, ConnectorType, Page, SyncResult } from "../types";
 import { getJson, postJson } from "../lib/api";
@@ -22,6 +30,38 @@ const groupLabels: Record<string, string> = { exchange: "Exchanges", wallet: "Wa
 
 export function groupLabel(kind: Kind): string {
   return groupLabels[kind] ?? "Other";
+}
+
+function ConnectorTypeIcon({ type, glyph }: { type: ConnectorType; glyph: string }) {
+  const iconProps = { size: "100%", variant: "background" as const, className: "size-full" };
+
+  if (type === "exchange_import") {
+    return (
+      <span className="flex size-full items-center justify-center gap-0.5 px-1">
+        <ExchangeBitget size="50%" variant="background" />
+        <ExchangeBinance size="50%" variant="background" />
+      </span>
+    );
+  }
+  if (type === "bitcoin_address") return <NetworkBitcoin {...iconProps} />;
+  if (type === "evm_address") return <WalletMetamask {...iconProps} />;
+  if (type === "solana_address") return <NetworkSolana {...iconProps} />;
+  if (type === "monero_rpc") return <TokenXMR {...iconProps} />;
+  if (type === "manual") return <span className="grid size-full place-items-center text-sm font-bold">{glyph}</span>;
+  return <span className="grid size-full place-items-center text-sm font-bold">{glyph}</span>;
+}
+
+function ConnectSourceCard({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="grid min-h-40 place-items-center gap-1.5 rounded-card border border-dashed border-line-strong text-soft transition-colors hover:border-accent hover:text-accent"
+    >
+      <Plus size={20} />
+      <span className="text-sm font-semibold">Connect another source</span>
+      <span className={cx("text-[11px]")}>Exchange · wallet · manual</span>
+    </button>
+  );
 }
 
 interface AccountsPageProps {
@@ -76,18 +116,21 @@ export function AccountsPage({ navigate }: AccountsPageProps) {
           <Skeleton className="h-44" />
         </div>
       ) : (accounts ?? []).length === 0 ? (
-        <Card>
-          <EmptyState
-            icon={<WalletCards size={22} />}
-            title="No sources linked"
-            text="Register an exchange, wallet, or manual bucket to start building the ledger."
-            action={
-              <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => setShowAdd(true)}>
-                Add your first source
-              </Button>
-            }
-          />
-        </Card>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Card>
+            <EmptyState
+              icon={<WalletCards size={22} />}
+              title="No sources linked"
+              text="Register an exchange, wallet, or manual bucket to start building the ledger."
+              action={
+                <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => setShowAdd(true)}>
+                  Add your first source
+                </Button>
+              }
+            />
+          </Card>
+          <ConnectSourceCard onClick={() => setShowAdd(true)} />
+        </div>
       ) : (
         GROUP_ORDER.filter((kind) => (groups[kind] ?? []).length > 0).map((kind) => (
           <section key={kind}>
@@ -96,16 +139,6 @@ export function AccountsPage({ navigate }: AccountsPageProps) {
               {(groups[kind] ?? []).map((account) => (
                 <SourceCard key={account.id} account={account} onManage={setManaging} />
               ))}
-              {kind === "exchange" && (
-                <button
-                  onClick={() => setShowAdd(true)}
-                  className="grid min-h-40 place-items-center gap-1.5 rounded-card border border-dashed border-line-strong text-soft transition-colors hover:border-accent hover:text-accent"
-                >
-                  <Plus size={20} />
-                  <span className="text-sm font-semibold">Connect another source</span>
-                  <span className={cx("text-[11px]")}>Exchange · wallet · manual</span>
-                </button>
-              )}
             </div>
           </section>
         ))
@@ -175,8 +208,6 @@ interface SourceForm {
   network_name: string;
   native_symbol: string;
   explorer_api_url: string;
-  explorer_api_key: string;
-  bsc_trace_api_key: string;
   bsc_token_contracts: string;
   address: string;
   host: string;
@@ -232,8 +263,6 @@ const EMPTY_FORM: SourceForm = {
   network_name: "",
   native_symbol: "ETH",
   explorer_api_url: "",
-  explorer_api_key: "",
-  bsc_trace_api_key: "",
   bsc_token_contracts: "",
   address: "",
   host: "127.0.0.1",
@@ -294,7 +323,6 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
             network_name: form.network_name,
             native_symbol: form.native_symbol,
             explorer_api_url: form.explorer_api_url || undefined,
-            explorer_api_key: form.explorer_api_key.trim() || undefined,
           };
         } else if (form.chain_network === "bsc") {
           const contracts = form.bsc_token_contracts
@@ -302,7 +330,6 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
             .map((c) => c.trim())
             .filter(Boolean);
           const config: Record<string, unknown> = {};
-          if (form.bsc_trace_api_key.trim()) config.bsc_trace_api_key = form.bsc_trace_api_key.trim();
           if (contracts.length > 0) config.bsc_token_contracts = contracts;
           if (Object.keys(config).length > 0) body.config = config;
         }
@@ -340,9 +367,6 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
             amount: form.initial_amount.trim(),
             occurred_at: new Date().toISOString(),
             account_id: createdAccount.id,
-            source_label: form.name,
-            description: "Opening balance",
-            notes: "Initial balance entered when this manual account was linked.",
           });
         } catch (reason) {
           setWarning(`Account saved, but the opening balance could not be recorded: ${reason instanceof Error ? reason.message : "unknown error"}. You can add it later from Activity.`);
@@ -427,8 +451,8 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
               onClick={() => setType(option.id)}
               className="flex items-start gap-3 rounded-lg border border-line px-3.5 py-3 text-left transition-colors hover:border-accent hover:bg-accent-soft/40"
             >
-              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-accent-soft text-sm font-bold text-accent">
-                {option.glyph}
+              <span className="grid size-9 shrink-0 place-items-center overflow-hidden rounded-lg bg-accent-soft text-sm font-bold text-accent">
+                <ConnectorTypeIcon type={option.id} glyph={option.glyph} />
               </span>
               <span>
                 <span className="block text-sm font-semibold text-ink">{option.label}</span>
@@ -568,14 +592,7 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
                         rows={2}
                       />
                     </Field>
-                    <Field
-                      label="BSCTrace / MegaNode API key (optional)"
-                      htmlFor="acc-bsc-trace-key"
-                      className="sm:col-span-2"
-                      hint="Optional free indexed access. Add a key from the NodeReal/MegaNode dashboard to import native BNB, internal, BEP-20, NFT, and contract-call history across the account. Without it, the app uses public RPC fallback for native balance plus the default USDC/WBNB token logs."
-                    >
-                      <Input id="acc-bsc-trace-key" type="password" value={form.bsc_trace_api_key} onChange={(e) => change("bsc_trace_api_key", e.target.value)} placeholder="MegaNode API key" />
-                    </Field>
+                    <p className="sm:col-span-2 rounded-lg bg-base px-3 py-2.5 text-[11px] text-soft">Optional explorer keys are configured once in Settings → Providers and shared by all compatible wallets.</p>
                   </>
                 )}
                 {form.chain_network === "custom" && (
@@ -592,9 +609,7 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
                     <Field label="Explorer API URL (optional)" htmlFor="acc-explorer-url" hint="Defaults to Routescan. Use a Blockscout or Etherscan-compatible API URL for another indexed network.">
                       <Input id="acc-explorer-url" value={form.explorer_api_url} onChange={(e) => change("explorer_api_url", e.target.value)} placeholder="https://…/api" />
                     </Field>
-                    <Field label="Explorer API key (optional)" htmlFor="acc-custom-explorer-key" className="sm:col-span-2" hint="Required by providers such as Etherscan; encrypted before storage.">
-                      <Input id="acc-custom-explorer-key" type="password" value={form.explorer_api_key} onChange={(e) => change("explorer_api_key", e.target.value)} placeholder="Optional API key" />
-                    </Field>
+                    <p className="sm:col-span-2 text-[11px] text-soft">Explorer credentials are configured once in Settings and shared by all compatible networks.</p>
                   </div>
                 )}
               </>

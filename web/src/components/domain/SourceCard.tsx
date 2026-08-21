@@ -1,3 +1,16 @@
+import {
+  ExchangeBinance,
+  ExchangeBitget,
+  NetworkBinanceSmartChain,
+  NetworkBitcoin,
+  NetworkEthereum,
+  NetworkPolygon,
+  NetworkSolana,
+  WalletLedger,
+  WalletMetamask,
+  WalletPhantom,
+  WalletRabby,
+} from "@web3icons/react";
 import { Clock3, Settings2 } from "lucide-react";
 import type { Account } from "../../types";
 import { Card } from "../ui/Card";
@@ -17,6 +30,35 @@ export function accountKindLabel(kind: string): string {
   return kindMeta[kind]?.label ?? kind;
 }
 
+function SourceIcon({ account, connector, meta }: { account: Account; connector: ReturnType<typeof connectorTypeMeta>; meta: { glyph: string } }) {
+  const fallback = (
+    <span className="grid size-full place-items-center text-sm font-bold">
+      {account.kind === "wallet" ? connector.glyph : meta.glyph}
+    </span>
+  );
+  const iconProps = { size: "100%", variant: "background" as const, className: "size-full" };
+
+  if (account.kind === "exchange") {
+    const exchangeName = account.connector_type === "bitget_live" ? "bitget" : account.connector_type === "binance_live" ? "binance" : account.name.trim().toLowerCase();
+    const Exchange = exchangeName === "bitget" ? ExchangeBitget : exchangeName === "binance" ? ExchangeBinance : null;
+    if (Exchange) return <Exchange {...iconProps} />;
+  }
+
+  if (account.kind === "wallet" && account.wallet_software) {
+    const walletName = account.wallet_software.toLowerCase().replace(/[\s_-]/g, "");
+    const Wallet = walletName === "metamask" ? WalletMetamask : walletName === "rabby" ? WalletRabby : walletName === "phantom" ? WalletPhantom : walletName === "ledger" ? WalletLedger : null;
+    if (Wallet) return <Wallet {...iconProps} />;
+  }
+
+  if (account.kind === "wallet") {
+    const networkName = (account.chain_network ?? (account.connector_type === "bitcoin_address" ? "bitcoin" : account.connector_type === "solana_address" ? "solana" : null))?.toLowerCase().replace(/[\s_-]/g, "");
+    const Network = networkName === "ethereum" ? NetworkEthereum : networkName === "polygon" ? NetworkPolygon : networkName === "bsc" || networkName === "bnbsmartchain" ? NetworkBinanceSmartChain : networkName === "bitcoin" ? NetworkBitcoin : networkName === "solana" ? NetworkSolana : null;
+    if (Network) return <Network {...iconProps} />;
+  }
+
+  return fallback;
+}
+
 export function SourceCard({ account, onManage }: { account: Account; onManage: (account: Account) => void }) {
   const meta = kindMeta[account.kind] ?? kindMeta.other;
   const connector = connectorTypeMeta(account.connector_type);
@@ -27,11 +69,11 @@ export function SourceCard({ account, onManage }: { account: Account; onManage: 
         <div className="flex items-center gap-3">
           <span
             className={cx(
-              "grid size-10 shrink-0 place-items-center rounded-xl text-sm font-bold",
-              account.kind === "exchange" ? "bg-accent text-white" : "bg-accent-soft text-accent",
+              "grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl text-accent",
+              account.kind === "exchange" ? "bg-accent text-white" : "bg-accent-soft",
             )}
           >
-            {account.kind === "wallet" ? connector.glyph : meta.glyph}
+            <SourceIcon account={account} connector={connector} meta={meta} />
           </span>
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold text-ink">{account.name}</h3>
@@ -52,6 +94,26 @@ export function SourceCard({ account, onManage }: { account: Account; onManage: 
         )}
         <p className="text-faint">{account.note || "No source note recorded."}</p>
       </div>
+
+      {account.balances?.length > 0 && (
+        <div className="mt-4 border-t border-line pt-3">
+          <p className="text-[10px] font-medium uppercase tracking-wider text-faint">Current balance</p>
+          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink">
+            {account.balances.slice(0, 4).map((balance) => (
+              <span key={`${balance.symbol}-${balance.network ?? ""}-${balance.contract_address ?? ""}`}>
+                {balance.wallet_label}: {balance.amount} {balance.symbol}
+              </span>
+            ))}
+            {account.balances.length > 4 && <span className="text-soft">+{account.balances.length - 4} more</span>}
+          </div>
+        </div>
+      )}
+
+      {account.fees?.length > 0 && (
+        <p className="mt-2 text-[11px] text-soft">
+          Fees recorded · {account.fees.slice(0, 2).map((fee) => `${fee.amount} ${fee.symbol}`).join(" · ")}
+        </p>
+      )}
 
       <div className="mt-5 flex items-center justify-between border-t border-line pt-3.5">
         <span className="inline-flex items-center gap-1.5 text-[11px] text-soft">

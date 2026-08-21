@@ -83,7 +83,7 @@ def _timestamp(value: object) -> int | None:
     return int(parsed.timestamp())
 
 
-def _estimated_from_block(api_key: str, since: datetime) -> int | None:
+def _estimated_block_range(api_key: str, since: datetime) -> tuple[int, int] | None:
     """Convert a recent sync timestamp to a bounded indexed block range.
 
     MegaNode limits nr_getAssetTransfers block ranges to 100,000 blocks. For
@@ -97,7 +97,20 @@ def _estimated_from_block(api_key: str, since: datetime) -> int | None:
     since_utc = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
     age = max(0, (datetime.now(timezone.utc) - since_utc).total_seconds()) + 900
     from_block = max(0, latest - int(age / _BLOCK_SECONDS))
-    return from_block if latest - from_block <= 100_000 else None
+    # MegaNode rejects an inclusive range whose lower bound equals `latest`:
+    # `fromBlock` must be strictly below `toBlock`. This happens when a sync
+    # runs again within the current block, or when the local clock is ahead of
+    # the chain. Include the preceding block rather than falling back to an
+    # unbounded account-history query.
+    if latest > 0 and from_block >= latest:
+        from_block = latest - 1
+    return (from_block, latest) if latest - from_block <= 100_000 and from_block < latest else None
+
+
+def _estimated_from_block(api_key: str, since: datetime) -> int | None:
+    """Backward-compatible helper for callers/tests that only need the start."""
+    block_range = _estimated_block_range(api_key, since)
+    return block_range[0] if block_range is not None else None
 
 
 def _transfer_payloads(row: dict) -> list[dict]:
@@ -223,7 +236,7 @@ def _enrich_payload(api_key: str, payload: dict, cache: dict[str, dict | None]) 
 
 def fetch_transfers(address: str, api_key: str, since: datetime | None = None) -> Iterable[dict]:
     """Yield Etherscan-shaped payloads from MegaNode's indexed BSC history."""
-    from_block = _estimated_from_block(api_key, since) if since else None
+    block_range = _estimated_block_range(api_key, since) if since else None
     seen: set[tuple[str, str, str, str]] = set()
     transaction_cache: dict[str, dict | None] = {}
     fee_attached_hashes: set[str] = set()
@@ -241,9 +254,14 @@ def fetch_transfers(address: str, api_key: str, since: datetime | None = None) -
                 "excludeZeroValue": False,
                 "maxCount": hex(_PAGE_SIZE),
             }
-            if from_block is not None:
+            if block_range is not None:
+                from_block, to_block = block_range
                 params["fromBlock"] = hex(from_block)
-                params["toBlock"] = "latest"
+                # Use the same numeric snapshot as the lower bound. Asking
+                # the API to resolve `latest` independently can produce an
+                # indexed height below fromBlock and the provider rejects the
+                # request as an inverted range.
+                params["toBlock"] = hex(to_block)
             if page_key:
                 params["pageKey"] = page_key
             result = _call(api_key, "nr_getAssetTransfers", [params])

@@ -58,6 +58,10 @@ class Asset(Base):
     contract_address: Mapped[str | None] = mapped_column(String)
     coingecko_id: Mapped[str | None] = mapped_column(String)
     decimals: Mapped[int | None] = mapped_column(Integer)
+    # User-controlled visibility policy. Blocking an asset hides it from the
+    # product's presentation and tax inputs without deleting canonical events
+    # or their raw evidence.
+    is_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
         Index("ix_assets_network", "network"),
@@ -139,20 +143,9 @@ class Event(Base):
     secondary_asset_id: Mapped[int | None] = mapped_column(ForeignKey("assets.id"))
     secondary_amount: Mapped[str | None] = mapped_column(String)
 
-    source_label: Mapped[str] = mapped_column(String, nullable=False)
-    destination_label: Mapped[str | None] = mapped_column(String)
-    counterparty: Mapped[str | None] = mapped_column(String)
-    description: Mapped[str | None] = mapped_column(Text)
-    merchant: Mapped[str | None] = mapped_column(String)
-    # JSON array, deliberately stored as text so the SQLite database remains
-    # portable. The API normalizes and validates it as a list of strings.
-    tags_json: Mapped[str | None] = mapped_column(Text)
-    evidence_reference: Mapped[str | None] = mapped_column(String)
-    notes: Mapped[str | None] = mapped_column(Text)
-
-    # Raw addresses (plan §17), distinct from source_label/destination_label
-    # which name *accounts*, not addresses. A staking deposit legitimately
-    # has only one side populated.
+    # The activity's from/to wallet values. These normally contain raw
+    # addresses, but a connector may provide a registered wallet name when no
+    # public address exists.
     address_from: Mapped[str | None] = mapped_column(String)
     address_to: Mapped[str | None] = mapped_column(String)
 
@@ -174,9 +167,14 @@ class Event(Base):
 
     # Explicit user classification for a move whose counterpart is missing
     # or outside this ledger. This is intentionally separate from
-    # destination_label/account matching: an internal transfer can be known
+    # address_to/account matching: an internal transfer can be known
     # to be yours without both sides being imported and linked.
     internal_transfer: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    @property
+    def wallet_display(self) -> str:
+        """Display the canonical wallet name/address without another field."""
+        return self.account.name if self.account is not None else (self.address_from or "Unlinked wallet")
 
     provenance: Mapped[str] = mapped_column(String, nullable=False, default="automatic")  # automatic | manual
     normalizer_version: Mapped[str] = mapped_column(String, nullable=False)
@@ -184,6 +182,7 @@ class Event(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
+    account: Mapped["Account | None"] = relationship(foreign_keys=[account_id])
     primary_asset: Mapped[Asset] = relationship(foreign_keys=[primary_asset_id])
     secondary_asset: Mapped["Asset | None"] = relationship(foreign_keys=[secondary_asset_id])
     raw_event: Mapped["RawEvent | None"] = relationship(foreign_keys=[raw_event_id])
@@ -354,6 +353,9 @@ class AppSettings(Base):
     valuation_currencies_json: Mapped[str] = mapped_column(Text, nullable=False, default='["EUR", "SEK"]')
     price_provider: Mapped[str] = mapped_column(String, nullable=False, default="coingecko")
     price_provider_api_key_encrypted: Mapped[str | None] = mapped_column(Text)
+    # Application-wide explorer/indexer credentials. New sources inherit
+    # these instead of duplicating a key in every wallet configuration.
+    explorer_api_keys_encrypted: Mapped[str | None] = mapped_column(Text)
     price_timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     backup_hour_utc: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     backup_verify_after_create: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

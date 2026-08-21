@@ -426,8 +426,6 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
   const [networkName, setNetworkName] = useState(account.evm_config?.network_name ?? "");
   const [nativeSymbol, setNativeSymbol] = useState(account.evm_config?.native_symbol ?? "ETH");
   const [explorerApiUrl, setExplorerApiUrl] = useState(account.evm_config?.explorer_api_url ?? "");
-  const [explorerApiKey, setExplorerApiKey] = useState("");
-  const [bscTraceApiKey, setBscTraceApiKey] = useState("");
   const [bscTokenContracts, setBscTokenContracts] = useState((account.evm_config?.bsc_token_contracts ?? []).join("\n"));
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
@@ -456,7 +454,6 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
             network_name: networkName,
             native_symbol: nativeSymbol,
             explorer_api_url: explorerApiUrl || undefined,
-            explorer_api_key: explorerApiKey.trim() || undefined,
           };
         } else if (chainNetwork === "bsc") {
           const contracts = bscTokenContracts
@@ -464,7 +461,6 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
             .map((c) => c.trim())
             .filter(Boolean);
           const config: Record<string, unknown> = {};
-          if (bscTraceApiKey.trim()) config.bsc_trace_api_key = bscTraceApiKey.trim();
           config.bsc_token_contracts = contracts;
           body.config = config;
         }
@@ -534,9 +530,7 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
                 >
                   <Textarea id="edit-bsc-contracts" rows={2} value={bscTokenContracts} onChange={(e) => setBscTokenContracts(e.target.value)} placeholder="0x… (only needed for tokens beyond the defaults)" />
                 </Field>
-                <Field label="New BSCTrace / MegaNode API key (optional)" htmlFor="edit-bsc-trace-key" hint="Add a key from the NodeReal/MegaNode dashboard to use indexed native, internal, BEP-20, NFT, and contract-call history. Leave blank to keep the current key.">
-                  <Input id="edit-bsc-trace-key" type="password" value={bscTraceApiKey} onChange={(e) => setBscTraceApiKey(e.target.value)} placeholder="Unchanged" />
-                </Field>
+                <p className="text-[11px] text-soft">Explorer credentials are configured once in Settings and shared by all BSC sources.</p>
               </>
             )}
             {chainNetwork === "custom" && (
@@ -553,9 +547,7 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
                 <Field label="Explorer API URL (optional)" htmlFor="edit-explorer-url">
                   <Input id="edit-explorer-url" value={explorerApiUrl} onChange={(e) => setExplorerApiUrl(e.target.value)} placeholder="https://…/api" />
                 </Field>
-                <Field label="Explorer API key (optional)" htmlFor="edit-custom-explorer-key" className="sm:col-span-2">
-                  <Input id="edit-custom-explorer-key" type="password" value={explorerApiKey} onChange={(e) => setExplorerApiKey(e.target.value)} placeholder="Optional API key" />
-                </Field>
+                <p className="sm:col-span-2 text-[11px] text-soft">Explorer credentials are configured once in Settings and shared by compatible networks.</p>
               </div>
             )}
           </>

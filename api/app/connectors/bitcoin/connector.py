@@ -72,7 +72,7 @@ def _vout_address(entry: dict) -> str | None:
 
 
 def _first_address(entries: list[dict], get: callable, own_addresses: set[str], *, external: bool) -> str | None:
-    """First counterparty (or own) address on one side of the tx — a BTC tx
+    """First relevant (or own) address on one side of the tx — a BTC tx
     can have many inputs/outputs, so this is a reasonable single
     representative rather than a complete list (plan §17)."""
     for entry in entries:
@@ -84,7 +84,7 @@ def _first_address(entries: list[dict], get: callable, own_addresses: set[str], 
     return None
 
 
-def _tx_to_event(tx: dict, own_addresses: set[str], source_label: str, occurred_at: datetime) -> NormalizedEvent:
+def _tx_to_event(tx: dict, own_addresses: set[str], account_name: str, occurred_at: datetime) -> NormalizedEvent:
     net_sats = _net_value(tx, own_addresses)
     value_in = sum(v["prevout"]["value"] for v in tx["vin"] if v.get("prevout", {}).get("scriptpubkey_address") in own_addresses)
 
@@ -111,7 +111,7 @@ def _tx_to_event(tx: dict, own_addresses: set[str], source_label: str, occurred_
         asset_symbol="BTC",
         asset_network="Bitcoin",
         amount=f"{abs(net_sats) / 1e8:.8f}",
-        source_label=source_label,
+        account_name=account_name,
         address_from=address_from,
         address_to=address_to,
         notes=f"On-chain tx {tx['txid'][:12]}…",

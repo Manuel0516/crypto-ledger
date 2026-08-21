@@ -31,9 +31,6 @@ export function OpeningBalanceDialog({ account, onClose, onSaved }: OpeningBalan
         amount: amount.trim(),
         occurred_at: new Date(occurredAt).toISOString(),
         account_id: account.id,
-        source_label: account.name,
-        description: "Opening balance",
-        notes: "Initial balance entered for this manual account.",
       });
       onSaved();
     } catch (reason) {

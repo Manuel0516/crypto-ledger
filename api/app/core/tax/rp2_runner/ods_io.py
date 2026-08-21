@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.pricing.cache import get_historical_prices
 from app.core.pricing.config import configured_price_provider
-from ..common import EffectiveEvent, TransferPair
+from ..common import EffectiveEvent, TransferPair, is_liquidity_reward
 
 # RP2 event vocabulary (docs/input_files.md). Anything not mapped here
 # (fee-only entries, UNKNOWN, unclassified WITHDRAWAL/DEPOSIT) never reaches
@@ -112,13 +112,18 @@ def build_input(session: Session, events: list[EffectiveEvent], pairs: list[Tran
         fee_eur, unpriced = _fee_eur_value(session, event)
         any_fee_unpriced = any_fee_unpriced or unpriced
 
-        if event.event_type in IN_TYPE_MAP:
+        effective_type = "INCOME" if is_liquidity_reward(event) else event.event_type
+        if event.event_type == "LIQUIDITY" and not is_liquidity_reward(event):
+            warnings.append(f"Event #{event.id} (LIQUIDITY) remains in the activity schedule; generic liquidity add/remove is not included in RP2 tax totals.")
+            continue
+
+        if effective_type in IN_TYPE_MAP:
             unit_price = _eur_unit_price(event)
             if unit_price is None:
                 warnings.append(f"Event #{event.id} ({event.event_type} {amount} {asset}) has no EUR price yet — excluded from the RP2 input.")
                 continue
             assets.add(asset)
-            by_asset[asset].in_rows.append([_iso(event), label(event.source_label), taxpayer_name, asset, IN_TYPE_MAP[event.event_type], str(unit_price), str(amount), str(fee_eur), str(event.id), (event.notes or "")[:200]])
+            by_asset[asset].in_rows.append([_iso(event), label(event.wallet_display), taxpayer_name, asset, IN_TYPE_MAP[effective_type], str(unit_price), str(amount), str(fee_eur), str(event.id), ""])
 
         elif event.event_type == "SWAP":
             unit_price = _eur_unit_price(event)
@@ -126,13 +131,13 @@ def build_input(session: Session, events: list[EffectiveEvent], pairs: list[Tran
                 warnings.append(f"Event #{event.id} (SWAP {amount} {asset}) has no EUR price yet — excluded from the RP2 input.")
                 continue
             assets.add(asset)
-            by_asset[asset].out_rows.append([_iso(event), label(event.source_label), taxpayer_name, asset, "SELL", str(unit_price), str(amount), "0", str(fee_eur), str(event.id), (event.notes or "")[:200]])
+            by_asset[asset].out_rows.append([_iso(event), label(event.wallet_display), taxpayer_name, asset, "SELL", str(unit_price), str(amount), "0", str(fee_eur), str(event.id), ""])
             if event.secondary_asset and event.secondary_amount and Decimal(event.secondary_amount):
                 sec_asset = event.secondary_asset.symbol
                 sec_amount = Decimal(event.secondary_amount)
                 sec_unit_price = (unit_price * amount) / sec_amount
                 assets.add(sec_asset)
-                by_asset[sec_asset].in_rows.append([_iso(event), label(event.source_label), taxpayer_name, sec_asset, "BUY", str(sec_unit_price), str(sec_amount), "0", f"{event.id}-swap-in", (event.notes or "")[:200]])
+                by_asset[sec_asset].in_rows.append([_iso(event), label(event.wallet_display), taxpayer_name, sec_asset, "BUY", str(sec_unit_price), str(sec_amount), "0", f"{event.id}-swap-in", ""])
 
         elif event.event_type in OUT_TYPE_MAP:
             is_loss = event.event_type in ("LOST", "STOLEN")
@@ -141,20 +146,17 @@ def build_input(session: Session, events: list[EffectiveEvent], pairs: list[Tran
                 warnings.append(f"Event #{event.id} ({event.event_type} {amount} {asset}) has no EUR price yet — excluded from the RP2 input.")
                 continue
             assets.add(asset)
-            by_asset[asset].out_rows.append([_iso(event), label(event.source_label), taxpayer_name, asset, OUT_TYPE_MAP[event.event_type], str(unit_price), str(amount), "0", str(fee_eur), str(event.id), (event.notes or "")[:200]])
+            by_asset[asset].out_rows.append([_iso(event), label(event.wallet_display), taxpayer_name, asset, OUT_TYPE_MAP[event.event_type], str(unit_price), str(amount), "0", str(fee_eur), str(event.id), ""])
 
     for pair in pairs:
         w, d = pair.withdrawal, pair.deposit
         asset = w.primary_asset.symbol
         assets.add(asset)
         unit_price = _eur_unit_price(w) or _eur_unit_price(d)
-        by_asset[asset].intra_rows.append([_iso(w), label(w.source_label), taxpayer_name, label(d.source_label), taxpayer_name, asset, str(unit_price) if unit_price is not None else "", str(w.primary_amount), str(d.primary_amount), str(w.id), (w.notes or "")[:200]])
+        by_asset[asset].intra_rows.append([_iso(w), label(w.wallet_display), taxpayer_name, label(d.wallet_display), taxpayer_name, asset, str(unit_price) if unit_price is not None else "", str(w.primary_amount), str(d.primary_amount), str(w.id), ""])
 
     if any_fee_unpriced:
         warnings.append("Some fees were in an asset with no known EUR price for that day — those fees contribute 0 to the totals rather than being guessed.")
-    if not assets:
-        raise ValueError("No priced, classifiable events found — nothing to send to RP2.")
-
     ods_path = work_dir / "rp2_input.ods"
     ini_path = work_dir / "rp2_config.ini"
     _write_ods(ods_path, by_asset)

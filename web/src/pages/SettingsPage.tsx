@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Archive, BadgeDollarSign, Check, ChevronDown, Database, Eye, EyeOff, FileText, HardDrive, KeyRound, Languages, Pencil, Plus, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, TimerReset, Trash2, Waypoints } from "lucide-react";
-import type { Account, AppSettings, Page, SecretInventoryItem, SyncResult, TaxCountry, TaxLanguage } from "../types";
+import type { Account, AppSettings, AssetVisibility, Page, SecretInventoryItem, SyncResult, TaxCountry, TaxLanguage } from "../types";
 import { API_BASE, deleteJson, getJson, patchJson, postJson, triggerDownload } from "../lib/api";
 import { Card, CardHeader } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -19,6 +19,7 @@ type SettingsPatch = Partial<Omit<AppSettings, "evidence_retention_policy">>;
 interface SettingsStatus {
   database: string;
   price_provider_api_key_configured: boolean;
+  explorer_api_keys_configured: Record<string, boolean>;
   backup_encryption_configured: boolean;
   application_secret_configured: boolean;
   evidence_retention: string;
@@ -28,7 +29,7 @@ interface SettingsStatus {
 const TABS: Array<{ id: SettingsTab; label: string; icon: React.ReactNode }> = [
   { id: "general", label: "General", icon: <Settings2 size={15} /> },
   { id: "currencies", label: "Currencies", icon: <BadgeDollarSign size={15} /> },
-  { id: "pricing", label: "Price providers", icon: <Waypoints size={15} /> },
+  { id: "pricing", label: "Providers", icon: <Waypoints size={15} /> },
   { id: "sync", label: "Synchronization", icon: <RefreshCw size={15} /> },
   { id: "backups", label: "Backups", icon: <HardDrive size={15} /> },
   { id: "security", label: "Security", icon: <KeyRound size={15} /> },
@@ -122,9 +123,19 @@ function PricingSection({ settings, save }: SectionProps) {
   const [provider, setProvider] = useState(settings.price_provider);
   const [timeout, setTimeoutValue] = useState(String(settings.price_timeout_seconds));
   const [apiKey, setApiKey] = useState(""); const [keyFeedback, setKeyFeedback] = useState("");
+  const [etherscanKey, setEtherscanKey] = useState("");
+  const [bscTraceKey, setBscTraceKey] = useState("");
+  const [explorerFeedback, setExplorerFeedback] = useState("");
   useEffect(() => { setProvider(settings.price_provider); setTimeoutValue(String(settings.price_timeout_seconds)); }, [settings.price_provider, settings.price_timeout_seconds]);
   const storeKey = async () => { if (!apiKey.trim()) return; await postJson("/api/settings/secrets/price-provider-key", { value: apiKey }); setApiKey(""); setKeyFeedback("Encrypted API key saved."); };
-  return <div className="max-w-3xl space-y-4"><Card><CardHeader eyebrow="Market data" title="Price provider" subtitle="Provider responses are cached locally with their provenance." /><div className="grid gap-3 sm:grid-cols-2"><Field label="Active provider" htmlFor="price-provider"><Select id="price-provider" value={provider} onChange={(event) => setProvider(event.target.value)}>{(status?.supported_price_providers ?? ["coingecko"]).map((item) => <option key={item} value={item}>{item === "coingecko" ? "CoinGecko" : item}</option>)}</Select></Field><Field label="Request timeout (seconds)" htmlFor="price-timeout"><Input id="price-timeout" type="number" min="3" max="60" value={timeout} onChange={(event) => setTimeoutValue(event.target.value)} /></Field></div><div className="mt-4 flex flex-wrap items-center gap-2"><Button size="sm" variant="primary" onClick={() => void save({ price_provider: provider, price_timeout_seconds: Number(timeout) })}>Save price settings</Button><Badge tone={settings.price_provider_api_key_configured ? "success" : "neutral"} dot>{settings.price_provider_api_key_configured ? "API key configured" : "Public API mode"}</Badge></div></Card><Card><CardHeader eyebrow="Provider credentials" title="CoinGecko API key" subtitle="A key saved here is encrypted using the host-managed application key." /><div className="flex flex-col gap-3 sm:flex-row sm:items-end"><Field className="flex-1" label="API key" htmlFor="provider-api-key"><Input id="provider-api-key" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={settings.price_provider_api_key_configured ? "Replace existing key" : "Paste API key"} /></Field><Button size="sm" variant="secondary" onClick={() => void storeKey()}>Save encrypted key</Button></div>{keyFeedback && <p className="mt-3 text-xs text-good">{keyFeedback}</p>}<p className="mt-3 text-xs text-soft">Reveal or permanently delete this app-managed key in Security. CoinGecko credentials are never read from environment variables.</p></Card></div>;
+  const storeExplorerKey = async (providerName: "etherscan" | "bsc_trace", value: string, clear: () => void) => {
+    if (!value.trim()) return;
+    await postJson(`/api/settings/secrets/explorer/${providerName}`, { value });
+    clear();
+    setExplorerFeedback("Encrypted blockchain provider key saved.");
+  };
+  const configured = settings.explorer_api_keys_configured ?? {};
+  return <div className="max-w-3xl space-y-4"><Card><CardHeader eyebrow="Market data" title="Price provider" subtitle="Provider responses are cached locally with their provenance." /><div className="grid gap-3 sm:grid-cols-2"><Field label="Active provider" htmlFor="price-provider"><Select id="price-provider" value={provider} onChange={(event) => setProvider(event.target.value)}>{(status?.supported_price_providers ?? ["coingecko"]).map((item) => <option key={item} value={item}>{item === "coingecko" ? "CoinGecko" : item}</option>)}</Select></Field><Field label="Request timeout (seconds)" htmlFor="price-timeout"><Input id="price-timeout" type="number" min="3" max="60" value={timeout} onChange={(event) => setTimeoutValue(event.target.value)} /></Field></div><div className="mt-4 flex flex-wrap items-center gap-2"><Button size="sm" variant="primary" onClick={() => void save({ price_provider: provider, price_timeout_seconds: Number(timeout) })}>Save price settings</Button><Badge tone={settings.price_provider_api_key_configured ? "success" : "neutral"} dot>{settings.price_provider_api_key_configured ? "API key configured" : "Public API mode"}</Badge></div></Card><Card><CardHeader eyebrow="Provider credentials" title="CoinGecko API key" subtitle="A key saved here is encrypted using the host-managed application key." /><div className="flex flex-col gap-3 sm:flex-row sm:items-start"><Field className="flex-1" label="API key" htmlFor="provider-api-key"><Input id="provider-api-key" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={settings.price_provider_api_key_configured ? "Replace existing key" : "Paste API key"} /></Field><Button className="sm:mt-6" size="sm" variant="secondary" onClick={() => void storeKey()}>Save encrypted key</Button></div>{keyFeedback && <p className="mt-3 text-xs text-good">{keyFeedback}</p>}<p className="mt-3 text-xs text-soft">Reveal or permanently delete this app-managed key in Security. CoinGecko credentials are never read from environment variables.</p></Card><Card><CardHeader eyebrow="Blockchain data" title="Explorer and indexer keys" subtitle="These application-wide keys are reused by every compatible wallet source. Public endpoints continue to work where available." /><div className="space-y-4"><div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-start"><Field label="Etherscan / BscScan" htmlFor="etherscan-key" hint={configured.etherscan ? "Configured · replace if needed" : "Optional · improves EVM history coverage"}><Input id="etherscan-key" type="password" value={etherscanKey} onChange={(event) => setEtherscanKey(event.target.value)} placeholder="Paste API key" /></Field><Button className="sm:mt-6" size="sm" variant="secondary" onClick={() => void storeExplorerKey("etherscan", etherscanKey, () => setEtherscanKey(""))}>Save key</Button></div><div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-start"><Field label="BSCTrace / MegaNode" htmlFor="bsc-trace-key" hint={configured.bsc_trace ? "Configured · replace if needed" : "Optional · full BSC transfers and balances"}><Input id="bsc-trace-key" type="password" value={bscTraceKey} onChange={(event) => setBscTraceKey(event.target.value)} placeholder="Paste API key" /></Field><Button className="sm:mt-6" size="sm" variant="secondary" onClick={() => void storeExplorerKey("bsc_trace", bscTraceKey, () => setBscTraceKey(""))}>Save key</Button></div>{explorerFeedback && <p className="text-xs text-good">{explorerFeedback}</p>}<p className="text-xs text-soft">Keys are encrypted and can be revealed or deleted from Security. They are never returned by the account API.</p></div></Card></div>;
 }
 
 function SyncSection({ settings, save, navigate }: SectionProps) {
@@ -189,7 +200,27 @@ function SecuritySection() {
   </div>;
 }
 
-function DataSection() { return <div className="max-w-3xl space-y-4"><Card><CardHeader eyebrow="Portability" title="Exports and evidence" subtitle="Your financial history remains portable even if this app is no longer maintained." /><div className="flex flex-wrap gap-2.5"><Button size="sm" icon={<FileText size={14} />} onClick={() => triggerDownload("/api/export/ledger.csv")}>Full ledger CSV</Button><Button size="sm" icon={<Archive size={14} />} onClick={() => triggerDownload("/api/export/evidence.zip")}>Evidence archive</Button></div></Card><Card><CardHeader eyebrow="Retention" title="Evidence is retained indefinitely" subtitle="Raw evidence and canonical history are not automatically purged." /><p className="text-xs text-soft">This is an intentional ledger invariant, not a configurable deletion schedule. Sources can be archived, but archived history remains auditable and recoverable.</p></Card></div>; }
+function DataSection() {
+  const { data: assets, loading, refresh } = useData<AssetVisibility[]>(() => getJson("/api/assets"), []);
+  const [busy, setBusy] = useState<number | null>(null);
+  const toggleAsset = async (asset: AssetVisibility) => {
+    setBusy(asset.id);
+    try {
+      await patchJson(`/api/assets/${asset.id}`, { is_blocked: !asset.is_blocked });
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  };
+  return <div className="max-w-3xl space-y-4">
+    <Card><CardHeader eyebrow="Portability" title="Exports and evidence" subtitle="Your financial history remains portable even if this app is no longer maintained." /><div className="flex flex-wrap gap-2.5"><Button size="sm" icon={<FileText size={14} />} onClick={() => triggerDownload("/api/export/ledger.csv")}>Full ledger CSV</Button><Button size="sm" icon={<Archive size={14} />} onClick={() => triggerDownload("/api/export/evidence.zip")}>Evidence archive</Button></div></Card>
+    <Card>
+      <CardHeader eyebrow="Asset visibility" title="Blocked assets" subtitle="Use this for unsolicited tokens and contract spam. Blocking is reversible and does not delete ledger evidence." />
+      {loading ? <p className="text-xs text-soft">Loading assets…</p> : (assets ?? []).length === 0 ? <p className="text-xs text-soft">No assets have been recorded yet.</p> : <div className="max-h-[32rem] divide-y divide-line overflow-y-auto rounded-lg border border-line">{(assets ?? []).map((asset) => <div key={asset.id} className="flex items-center gap-3 px-3 py-3"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-ink">{asset.symbol}</p>{asset.is_blocked && <Badge tone="warning">Blocked</Badge>}{asset.spam_suspected && <Badge tone="info">Mass distribution signal</Badge>}</div><p className="mt-0.5 truncate text-xs text-soft">{asset.name}{asset.network ? ` · ${asset.network}` : ""}{asset.contract_address ? ` · ${asset.contract_address}` : ""}</p><p className="mt-0.5 text-[11px] text-faint">{asset.event_count} recorded event{asset.event_count === 1 ? "" : "s"}</p></div><Button size="sm" variant={asset.is_blocked ? "secondary" : "ghost"} loading={busy === asset.id} onClick={() => void toggleAsset(asset)}>{asset.is_blocked ? "Unblock" : "Block"}</Button></div>)}</div>}
+    </Card>
+    <Card><CardHeader eyebrow="Retention" title="Evidence is retained indefinitely" subtitle="Raw evidence and canonical history are not automatically purged." /><p className="text-xs text-soft">This is an intentional ledger invariant, not a configurable deletion schedule. Sources can be archived, but archived history remains auditable and recoverable.</p></Card>
+  </div>;
+}
 
 function TaxSection({ settings, save, navigate }: SectionProps) {
   const { data: countries } = useData<TaxCountry[]>(() => getJson("/api/tax/countries"), []); const { data: languages } = useData<TaxLanguage[]>(() => getJson("/api/tax/languages"), []);

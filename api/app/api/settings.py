@@ -14,6 +14,7 @@ from app.core.settings import (
     EVIDENCE_RETENTION_POLICY,
     SUPPORTED_PRICE_PROVIDERS,
     THEME_OPTIONS,
+    explorer_api_keys,
     get_or_create_settings,
     rp2_plugins,
     reset_settings,
@@ -37,6 +38,7 @@ def _serialize(settings: AppSettings) -> dict:
         "valuation_currencies": list(valuation_currencies(settings)),
         "price_provider": settings.price_provider,
         "price_provider_api_key_configured": bool(settings.price_provider_api_key_encrypted),
+        "explorer_api_keys_configured": {name: True for name in explorer_api_keys(settings)},
         "price_timeout_seconds": settings.price_timeout_seconds,
         "backup_hour_utc": settings.backup_hour_utc,
         "backup_verify_after_create": settings.backup_verify_after_create,
@@ -62,9 +64,11 @@ def get_settings(session: Session = Depends(get_session)):
 @router.get("/status")
 def settings_status(session: Session = Depends(get_session)):
     """Expose configuration health without ever returning a secret or host path."""
+    settings = get_or_create_settings(session)
     return {
         "database": "SQLite",
-        "price_provider_api_key_configured": bool(get_or_create_settings(session).price_provider_api_key_encrypted),
+        "price_provider_api_key_configured": bool(settings.price_provider_api_key_encrypted),
+        "explorer_api_keys_configured": {name: True for name in explorer_api_keys(settings)},
         "backup_encryption_configured": bool(os.getenv("BACKUP_ENCRYPTION_KEY")),
         "application_secret_configured": bool(os.getenv("APP_SECRET_KEY") or os.getenv("BACKUP_ENCRYPTION_KEY")),
         "evidence_retention": EVIDENCE_RETENTION_POLICY,
@@ -234,10 +238,12 @@ class SecretConfirmation(BaseModel):
 
 
 _SECRET_FIELDS = {"api_key", "api_secret", "passphrase", "password", "rpc_password", "macaroon"}
+_EXPLORER_KEY_NAMES = {"etherscan", "bsc_trace"}
 
 
 def _secret_inventory(session: Session) -> list[dict]:
     settings = get_or_create_settings(session)
+    configured_explorer_keys = explorer_api_keys(settings)
     items = [
         {
             "id": "price-provider-key",
@@ -247,6 +253,24 @@ def _secret_inventory(session: Session) -> list[dict]:
             "revealable": bool(settings.price_provider_api_key_encrypted),
             "deletable": bool(settings.price_provider_api_key_encrypted),
             "editable": bool(settings.price_provider_api_key_encrypted),
+        },
+        {
+            "id": "explorer:etherscan",
+            "label": "Etherscan / BscScan API key",
+            "location": "Application vault",
+            "configured": bool(configured_explorer_keys.get("etherscan")),
+            "revealable": bool(configured_explorer_keys.get("etherscan")),
+            "deletable": bool(configured_explorer_keys.get("etherscan")),
+            "editable": bool(configured_explorer_keys.get("etherscan")),
+        },
+        {
+            "id": "explorer:bsc_trace",
+            "label": "BSCTrace / MegaNode API key",
+            "location": "Application vault",
+            "configured": bool(configured_explorer_keys.get("bsc_trace")),
+            "revealable": bool(configured_explorer_keys.get("bsc_trace")),
+            "deletable": bool(configured_explorer_keys.get("bsc_trace")),
+            "editable": bool(configured_explorer_keys.get("bsc_trace")),
         },
         {
             "id": "application-master-key",
@@ -291,6 +315,19 @@ def store_provider_key(body: ProviderKeyInput, session: Session = Depends(get_se
     return {"configured": True}
 
 
+@router.post("/secrets/explorer/{provider}")
+def store_explorer_key(provider: str, body: ProviderKeyInput, session: Session = Depends(get_session)):
+    provider = provider.strip().lower()
+    if provider not in _EXPLORER_KEY_NAMES:
+        raise HTTPException(404, "Unknown explorer provider")
+    settings = get_or_create_settings(session)
+    keys = explorer_api_keys(settings)
+    keys[provider] = body.value.strip()
+    settings.explorer_api_keys_encrypted = encrypt_config(keys)
+    session.commit()
+    return {"provider": provider, "configured": True}
+
+
 @router.post("/secrets/{secret_id}/reveal")
 def reveal_secret(secret_id: str, body: SecretConfirmation, session: Session = Depends(get_session)):
     if not body.confirmed:
@@ -298,6 +335,12 @@ def reveal_secret(secret_id: str, body: SecretConfirmation, session: Session = D
     settings = get_or_create_settings(session)
     if secret_id == "price-provider-key" and settings.price_provider_api_key_encrypted:
         return {"value": decrypt_config(settings.price_provider_api_key_encrypted).get("api_key", "")}
+    if secret_id.startswith("explorer:"):
+        provider = secret_id.split(":", 1)[1]
+        value = explorer_api_keys(settings).get(provider)
+        if value:
+            return {"value": value}
+        raise HTTPException(404, "This explorer key is not configured")
     if secret_id == "application-master-key":
         return {"value": os.getenv("APP_SECRET_KEY") or os.getenv("BACKUP_ENCRYPTION_KEY") or ""}
     if secret_id == "backup-encryption-key":
@@ -316,6 +359,15 @@ def update_secret(secret_id: str, body: SecretUpdate, session: Session = Depends
     settings = get_or_create_settings(session)
     if secret_id == "price-provider-key" and settings.price_provider_api_key_encrypted:
         settings.price_provider_api_key_encrypted = encrypt_config({"api_key": body.value.strip()})
+    elif secret_id.startswith("explorer:"):
+        provider = secret_id.split(":", 1)[1]
+        if provider not in _EXPLORER_KEY_NAMES:
+            raise HTTPException(404, "Unknown explorer provider")
+        keys = explorer_api_keys(settings)
+        if provider not in keys:
+            raise HTTPException(404, "This explorer key is not configured")
+        keys[provider] = body.value.strip()
+        settings.explorer_api_keys_encrypted = encrypt_config(keys)
     elif secret_id.startswith("account:"):
         _, account_id, field = secret_id.split(":", 2)
         account = session.get(Account, int(account_id))
@@ -337,6 +389,13 @@ def delete_secret(secret_id: str, body: SecretConfirmation, session: Session = D
     settings = get_or_create_settings(session)
     if secret_id == "price-provider-key" and settings.price_provider_api_key_encrypted:
         settings.price_provider_api_key_encrypted = None
+    elif secret_id.startswith("explorer:"):
+        provider = secret_id.split(":", 1)[1]
+        keys = explorer_api_keys(settings)
+        if provider not in keys:
+            raise HTTPException(404, "This explorer key is not configured")
+        keys.pop(provider, None)
+        settings.explorer_api_keys_encrypted = encrypt_config(keys) if keys else None
     elif secret_id.startswith("account:"):
         _, account_id, field = secret_id.split(":", 2)
         account = session.get(Account, int(account_id))

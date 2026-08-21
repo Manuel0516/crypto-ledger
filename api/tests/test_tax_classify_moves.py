@@ -38,7 +38,7 @@ class ClassifyMovesTests(unittest.TestCase):
             status="COMPLETE",
             occurred_at=OCCURRED_AT,
             primary_asset_id=self.trx.id,
-            source_label="Bitget",
+            address_from="Bitget",
             provenance="automatic",
             normalizer_version="test",
         )
@@ -64,11 +64,11 @@ class ClassifyMovesTests(unittest.TestCase):
         self.assertEqual(pairs, [])
         self.assertEqual(ambiguous, [])
 
-    def test_a_genuine_unlinked_deposit_is_still_flagged_ambiguous(self) -> None:
+    def test_a_genuine_unlinked_deposit_is_an_independent_activity(self) -> None:
         event = self._event(event_type="DEPOSIT", direction="+", primary_amount="0.9")
         pairs, ambiguous = classify_moves([event])
         self.assertEqual(pairs, [])
-        self.assertEqual([e.id for e in ambiguous], [event._event.id])
+        self.assertEqual(ambiguous, [])
 
     def test_explicitly_internal_unlinked_move_is_not_ambiguous(self) -> None:
         event = self._event(
@@ -76,7 +76,7 @@ class ClassifyMovesTests(unittest.TestCase):
             direction="-",
             primary_amount="0.9",
             internal_transfer=True,
-            destination_label="My hardware wallet",
+            address_to="My hardware wallet",
         )
         pairs, ambiguous = classify_moves([event])
         self.assertEqual(pairs, [])
@@ -88,7 +88,7 @@ class ClassifyMovesTests(unittest.TestCase):
             direction="-",
             primary_amount="0.9",
             internal_transfer=True,
-            destination_label="My hardware wallet",
+            address_to="My hardware wallet",
         )
         rows, _corrections, _schedule, _total, _reconciliation = build_supplementary_rows(
             self.session, [event], [], OCCURRED_AT.year
@@ -98,9 +98,8 @@ class ClassifyMovesTests(unittest.TestCase):
         self.assertEqual(rows[0].to_label, "My hardware wallet")
 
     def test_a_secondary_leg_of_a_different_asset_is_not_treated_as_self_canceling(self) -> None:
-        # A real trade's quote leg (e.g. BUY BTC / SELL USDT) must still be
-        # flagged if event_type happens to be a move type — only a literal
-        # same-asset, same-amount secondary leg is exempted.
+        # A transfer remains a standalone activity even when it carries an
+        # unusual secondary leg; links are optional display grouping only.
         usdt = Asset(symbol="USDT", name="Tether", asset_type="STABLECOIN")
         self.session.add(usdt)
         self.session.flush()
@@ -112,7 +111,7 @@ class ClassifyMovesTests(unittest.TestCase):
             secondary_amount="5",
         )
         _pairs, ambiguous = classify_moves([event])
-        self.assertEqual([e.id for e in ambiguous], [event._event.id])
+        self.assertEqual(ambiguous, [])
 
     def test_a_properly_linked_withdrawal_deposit_pair_still_resolves(self) -> None:
         withdrawal = self._event(event_type="WITHDRAWAL", direction="-", primary_amount="1.0")

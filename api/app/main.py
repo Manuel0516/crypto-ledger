@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import accounts, attachments, backups, events, imports, issues, overview, prices, reports, settings, tax
+from app.api import accounts, assets, attachments, backups, events, imports, issues, overview, prices, reports, settings, tax
 from app.core.backup.service import backup_is_due, create_backup, prune_backups, verify_backup
 from app.core.ledger.sync import SYNCABLE_TYPES, sync_account
 from app.core.settings import get_or_create_settings
@@ -123,6 +123,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Crypto Ledger API", version="0.2.0-beta.1", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-for router_module in (overview, accounts, events, issues, reports, imports, backups, settings, tax, attachments, prices):
+for router_module in (overview, accounts, assets, events, issues, reports, imports, backups, settings, tax, attachments, prices):
     app.include_router(router_module.router)
 app.include_router(reports.export_router)

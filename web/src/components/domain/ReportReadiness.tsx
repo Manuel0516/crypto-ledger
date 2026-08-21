@@ -25,18 +25,10 @@ export function ReportReadiness({ refreshToken }: { refreshToken: number }) {
   if (!data) return null;
 
   const checks = [
-    {
-      label: "Source synchronization",
-      value: data.events > 0 ? "Synchronized" : "No events yet",
-      ok: data.events > 0,
-    },
-    { label: "Raw evidence captured", value: `${formatNumber(data.raw_evidence, 0)} records`, ok: data.raw_evidence > 0 },
-    { label: "EUR + SEK valuations", value: `${formatNumber(data.prices, 0)} observations`, ok: data.prices > 0 },
-    {
-      label: "Transfer reconciliation",
-      value: data.unresolved_issues === 0 ? "Complete" : `${data.unresolved_issues} unresolved`,
-      ok: data.unresolved_issues === 0,
-    },
+    { label: "Activities", value: `${formatNumber(data.activity_count ?? data.events, 0)} recorded`, ok: true },
+    { label: "Priced activities", value: `${formatNumber(data.priced_activity_count ?? data.prices, 0)} available`, ok: true },
+    { label: "Warnings", value: `${formatNumber(data.warning_count ?? data.unresolved_issues, 0)} to review`, ok: (data.warning_count ?? data.unresolved_issues) === 0 },
+    { label: "Incomplete activities", value: `${formatNumber(data.incomplete_activity_count ?? 0, 0)}`, ok: (data.incomplete_activity_count ?? 0) === 0 },
   ];
 
   return (
@@ -53,7 +45,7 @@ export function ReportReadiness({ refreshToken }: { refreshToken: number }) {
           </span>
           <div>
             <h3 className="text-sm font-semibold text-ink">{data.ready ? "Ready to report" : "Review recommended"}</h3>
-            <p className="mt-0.5 text-xs text-soft">{formatNumber(data.events, 0)} events in the canonical ledger</p>
+            <p className="mt-0.5 text-xs text-soft">{formatNumber(data.activity_count ?? data.events, 0)} activities in the canonical ledger</p>
           </div>
         </div>
         <Badge tone={data.ready ? "success" : "warning"}>{data.ready ? "Ready" : "Not ready"}</Badge>

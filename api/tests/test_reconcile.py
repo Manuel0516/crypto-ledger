@@ -66,7 +66,7 @@ class ReconcileTests(unittest.TestCase):
             occurred_at=OCCURRED_AT,
             primary_asset_id=asset.id,
             primary_amount=amount,
-            source_label="Test",
+            address_from="Test",
             provenance="manual",
             normalizer_version="test",
         )
@@ -88,7 +88,7 @@ class ReconcileTests(unittest.TestCase):
             primary_amount=base_amount,
             secondary_asset_id=quote.id,
             secondary_amount=quote_amount,
-            source_label="Test",
+            address_from="Test",
             provenance="manual",
             normalizer_version="test",
         )

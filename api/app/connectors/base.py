@@ -37,13 +37,11 @@ class NormalizedEvent:
     original_timestamp: str | None
     asset_symbol: str
     amount: str
-    source_label: str
-    destination_label: str | None = None
-    counterparty: str | None = None
+    account_name: str
     notes: str | None = None
-    # Raw addresses, distinct from source_label/destination_label (which are
-    # account *names*) — "where applicable" per plan §17. A staking deposit
-    # has one address, not two; leave the unused side None rather than guess.
+    # The activity's from/to wallet values. These normally contain raw
+    # addresses, but a connector may provide a registered wallet name when no
+    # public address exists.
     address_from: str | None = None
     address_to: str | None = None
     fees: list[NormalizedFee] = field(default_factory=list)
