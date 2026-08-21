@@ -1,6 +1,4 @@
-# Crypto Ledger
-
-![Crypto Ledger logo](web/public/crypto-ledger-logo.svg)
+<h1><img src="web/public/crypto-ledger-favicon.svg" alt="" width="44" height="44" align="absmiddle"> Crypto Ledger</h1>
 
 An evidence-first crypto portfolio, activity, reporting, and tax workspace. Crypto Ledger keeps a durable local ledger from connected exchanges, wallets, nodes, and manual entries, then lets you review, correct, export, back up, and report on that history without making a tax package the source of truth.
 
@@ -23,7 +21,9 @@ An evidence-first crypto portfolio, activity, reporting, and tax workspace. Cryp
 
 Here is a short looping tour of the demo workspace. It moves through the main product surfaces using synthetic data only:
 
-![Crypto Ledger product tour](docs/media/project-tour.gif)
+<p align="center">
+  <img src="docs/media/project-tour.gif" alt="Crypto Ledger phone product tour" width="340">
+</p>
 
 Individual captures are available for closer inspection:
 
