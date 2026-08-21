@@ -31,6 +31,11 @@ class HistoricalPrice:
         yield self.method
 
 
+def historical_unit_price(quote: HistoricalPrice | tuple[Decimal, str]) -> Decimal:
+    """Return the unit price from the current or legacy cached-price shape."""
+    return quote.unit_price if isinstance(quote, HistoricalPrice) else quote[0]
+
+
 class PriceProvider(Protocol):
     name: str
 

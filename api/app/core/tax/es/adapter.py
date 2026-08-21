@@ -48,7 +48,17 @@ class SpainAdapter:
         # schedule with explicit warnings instead of failing generation.
         has_tax_input = any(
             (
-                (is_liquidity_reward(event) or event.event_type in ods_io.IN_TYPE_MAP or event.event_type in ods_io.OUT_TYPE_MAP or event.event_type == "SWAP")
+                (
+                    is_liquidity_reward(event)
+                    or event.event_type in ods_io.IN_TYPE_MAP
+                    or event.event_type in ods_io.OUT_TYPE_MAP
+                    or (
+                        event.event_type == "SWAP"
+                        and event.secondary_asset is not None
+                        and event.secondary_amount not in (None, "")
+                        and Decimal(event.secondary_amount) != 0
+                    )
+                )
                 and any(v.quote_currency == "EUR" for v in event.valuations)
             )
             for event in events

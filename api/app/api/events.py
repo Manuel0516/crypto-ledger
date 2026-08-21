@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import Numeric, and_, cast, or_
 from sqlalchemy.orm import Session, aliased, selectinload
 
@@ -14,7 +14,7 @@ from app.connectors.manual import ManualConnector
 from app.core.assets.registry import get_or_create_asset
 from app.core.ledger.overrides import EDITABLE_FIELDS, apply_override, effective_values, restore_automatic_value
 from app.core.ledger.service import ingest, refresh_valuations
-from app.core.ledger.taxonomy import MANUAL_EVENT_TYPES
+from app.core.ledger.taxonomy import CANONICAL_EVENT_TYPES, MANUAL_EVENT_TYPES
 from app.core.settings import get_or_create_settings, minimum_activity_threshold
 from app.core.attachments.service import delete_attachment_file
 from app.db.models import Account, Asset, Attachment, Event, EventLink, Fee, Issue, Override, RawEvent, Valuation
@@ -80,7 +80,6 @@ def _serialize_summary(
 ) -> dict:
     values, modified = effective_values(session, event)
     valuations = {v.quote_currency: v.total_value for v in event.valuations}
-    first_fee = event.fees[0] if event.fees else None
     account_names = account_names if account_names is not None else set()
     open_issue_ids = open_issue_ids if open_issue_ids is not None else set()
     address_labels = address_labels if address_labels is not None else _address_label_map(session)
@@ -103,9 +102,7 @@ def _serialize_summary(
         "imported_at": event.raw_event.received_at.isoformat() if event.raw_event else event.created_at.isoformat(),
         "account_id": event.account_id,
         "account_name": account_name,
-        "fee_amount": first_fee.fee_amount if first_fee else None,
-        "fee_asset_symbol": first_fee.fee_asset.symbol if first_fee else None,
-        "fee_count": len(event.fees),
+        "fees": [_serialize_fee(fee) for fee in event.fees],
         "address_from_label": _display_address(values.get("address_from"), address_labels),
         "address_to_label": _display_address(values.get("address_to"), address_labels),
         "eur_value": valuations.get("EUR"),
@@ -127,17 +124,15 @@ def _serialize_summary(
 
 
 def _transaction_evidence(event: Event, values: dict[str, str | None]) -> dict:
-    """Expose provider transaction metadata without turning sender fees into
-    wallet debits on an incoming transfer.
+    """Expose provider transaction metadata without creating a second fee
+    representation or turning sender fees into wallet debits on an incoming transfer.
 
     EVM connectors retain the original gas fields in raw evidence. Newer BSC
-    records also carry MegaNode's transaction-detail response. The structured
-    fee below is informational for the transaction; ledger fees remain the
-    separately stored fees attached only when this account paid them.
+    records also carry MegaNode's transaction-detail response. Actual fees
+    attached to the activity are always represented by the canonical `fees`
+    collection; the raw payload remains available in Audit data.
     """
     empty = {
-        "transaction_fee_amount": None,
-        "transaction_fee_asset": None,
         "gas_used": None,
         "gas_price": None,
         "transaction_input": None,
@@ -154,19 +149,7 @@ def _transaction_evidence(event: Event, values: dict[str, str | None]) -> dict:
         return empty
     gas_used = payload.get("gasUsed")
     gas_price = payload.get("gasPrice")
-    fee_wei = payload.get("_transaction_fee_wei")
-    try:
-        if fee_wei in (None, "") and gas_used not in (None, "") and gas_price not in (None, ""):
-            fee_wei = Decimal(str(gas_used)) * Decimal(str(gas_price))
-        fee_amount = format(Decimal(str(fee_wei)) / Decimal(10**18), "f") if fee_wei not in (None, "") else None
-    except (InvalidOperation, TypeError, ValueError):
-        fee_amount = None
-    native_symbol = payload.get("_native_symbol")
-    if not native_symbol and payload.get("_network") == "BNB Smart Chain":
-        native_symbol = "BNB"
     return {
-        "transaction_fee_amount": fee_amount,
-        "transaction_fee_asset": native_symbol,
         "gas_used": str(gas_used) if gas_used not in (None, "") else None,
         "gas_price": str(gas_price) if gas_price not in (None, "") else None,
         "transaction_input": payload.get("input") or None,
@@ -343,7 +326,6 @@ def get_event(event_id: int, session: Session = Depends(get_session)):
             }
             for v in event.valuations
         ],
-        "fees": [_serialize_fee(f) for f in event.fees],
         "issues": [
             _serialize_issue(issue)
             for issue in session.query(Issue).filter(Issue.event_id == event.id, Issue.resolved.is_(False)).order_by(Issue.severity, Issue.id).all()
@@ -455,7 +437,38 @@ def _serialize_link(link: EventLink, related: Event, orientation: str) -> dict:
     }
 
 
+class FeeIn(BaseModel):
+    """The one fee shape used by manual input and fee editing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fee_type: str = "NETWORK_FEE"
+    asset_symbol: str
+    amount: str
+    fee_recipient: str | None = None
+
+    @field_validator("asset_symbol")
+    @classmethod
+    def symbol_must_be_present(cls, value: str) -> str:
+        value = value.strip().upper()
+        if not value:
+            raise ValueError("asset symbol is required")
+        return value
+
+    @field_validator("amount")
+    @classmethod
+    def amount_must_be_numeric(cls, value: str) -> str:
+        try:
+            if Decimal(value) <= 0:
+                raise ValueError
+        except (InvalidOperation, ValueError):
+            raise ValueError("fee amount must be a positive decimal number")
+        return value
+
+
 class ManualEventIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     event_type: str = "MANUAL_ADJUSTMENT"
     event_subtype: str | None = None
     symbol: str = "BTC"
@@ -474,9 +487,7 @@ class ManualEventIn(BaseModel):
     trade_id: str | None = None
     deposit_id: str | None = None
     withdrawal_id: str | None = None
-    fee_asset: str | None = None
-    fee_amount: str | None = None
-    fee_type: str = "NETWORK_FEE"
+    fees: list[FeeIn] = []
     eur_value: str | None = None
     sek_value: str | None = None
 
@@ -522,9 +533,9 @@ class ManualEventIn(BaseModel):
     def secondary_symbol_normalized(cls, value: str | None) -> str | None:
         return value.strip().upper() if value else None
 
-    @field_validator("fee_amount", "secondary_amount")
+    @field_validator("secondary_amount")
     @classmethod
-    def fee_amount_must_be_numeric(cls, value: str | None) -> str | None:
+    def secondary_amount_must_be_numeric(cls, value: str | None) -> str | None:
         if value is None or value == "":
             return None
         try:
@@ -692,6 +703,57 @@ def override_event(event_id: int, body: OverrideIn, session: Session = Depends(g
             amount=Decimal(values["primary_amount"]),
             occurred_at=datetime.fromisoformat(values["occurred_at"]),
         )
+
+    session.commit()
+    values, modified = effective_values(session, event)
+    return {"id": event.id, "values": values, "modified": modified}
+
+
+class AddSwapLegIn(BaseModel):
+    secondary_asset_symbol: str
+    secondary_asset_network: str | None = None
+    secondary_amount: str
+    event_type: str | None = "SWAP"
+    reason: str | None = None
+
+
+@router.post("/{event_id}/swap-leg")
+def add_swap_leg(event_id: int, body: AddSwapLegIn, session: Session = Depends(get_session)):
+    """Complete a single-leg event (typically an on-chain WITHDRAWAL/DEPOSIT
+    that was really one side of a swap the source connector never paired up)
+    into a proper two-leg swap. Unlike a normal override, this fills in a
+    field that was never set rather than shadowing an existing one — the
+    primary leg, its valuation, tx hash, and fees are all untouched, so
+    nothing here can silently orphan evidence the way changing the primary
+    asset would (see overrides.py's EDITABLE_FIELDS comment)."""
+    event = session.get(Event, event_id)
+    if event is None:
+        raise HTTPException(404, "Event not found")
+    if event.secondary_asset_id is not None:
+        raise HTTPException(400, "This event already has a second leg — edit its amount instead of recreating it")
+
+    try:
+        amount = Decimal(body.secondary_amount)
+    except InvalidOperation:
+        raise HTTPException(400, "secondary_amount must be a decimal number")
+    if amount <= 0:
+        raise HTTPException(400, "secondary_amount must be greater than zero")
+
+    symbol = body.secondary_asset_symbol.strip().upper()
+    if not symbol:
+        raise HTTPException(400, "secondary_asset_symbol is required")
+    secondary_asset = get_or_create_asset(session, symbol, network=body.secondary_asset_network or None)
+    event.secondary_asset = secondary_asset
+    event.secondary_amount = format(amount, "f")
+
+    event_type = (body.event_type or "").strip().upper()
+    if event_type and event_type != event.event_type:
+        if event_type not in CANONICAL_EVENT_TYPES:
+            raise HTTPException(400, f"Unknown event_type '{event_type}'")
+        try:
+            apply_override(session, event, "event_type", event_type, body.reason or "Recreated as a swap")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
 
     session.commit()
     values, modified = effective_values(session, event)
@@ -873,31 +935,6 @@ def restore_valuation(event_id: int, currency: str, body: RestoreIn, session: Se
     if restored is None:
         return {"restored": False, "message": "Automatic price is unavailable; a review issue was created"}
     return {"restored": True, "id": restored.id, "total_value": restored.total_value, "method": restored.method}
-
-
-class FeeIn(BaseModel):
-    fee_type: str = "NETWORK_FEE"
-    asset_symbol: str
-    amount: str
-    fee_recipient: str | None = None
-
-    @field_validator("asset_symbol")
-    @classmethod
-    def symbol_must_be_present(cls, value: str) -> str:
-        value = value.strip().upper()
-        if not value:
-            raise ValueError("asset symbol is required")
-        return value
-
-    @field_validator("amount")
-    @classmethod
-    def amount_must_be_numeric(cls, value: str) -> str:
-        try:
-            if Decimal(value) <= 0:
-                raise ValueError
-        except (InvalidOperation, ValueError):
-            raise ValueError("fee amount must be a positive decimal number")
-        return value
 
 
 @router.post("/{event_id}/fees")

@@ -24,12 +24,15 @@ class ManualConnector:
         direction = "-" if amount.startswith("-") else "+"
 
         fees: list[NormalizedFee] = []
-        if payload.get("fee_asset") and payload.get("fee_amount"):
+        for fee in payload.get("fees") or []:
+            if not isinstance(fee, dict) or not fee.get("asset_symbol") or not fee.get("amount"):
+                continue
             fees.append(
                 NormalizedFee(
-                    fee_type=payload.get("fee_type") or "NETWORK_FEE",
-                    asset_symbol=str(payload["fee_asset"]).upper(),
-                    amount=str(payload["fee_amount"]),
+                    fee_type=str(fee.get("fee_type") or "NETWORK_FEE"),
+                    asset_symbol=str(fee["asset_symbol"]).upper(),
+                    amount=str(fee["amount"]),
+                    fee_recipient=fee.get("fee_recipient") or None,
                 )
             )
 

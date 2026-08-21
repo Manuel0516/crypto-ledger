@@ -36,7 +36,7 @@ class GeneralAdapter:
             if event.event_type == "TRANSFER" or event.internal_transfer:
                 continue
             direction = Decimal(-1) if event.direction == "-" else Decimal(1)
-            balances[event.primary_asset.symbol] = balances.get(event.primary_asset.symbol, Decimal(0)) + direction * Decimal(event.primary_amount)
+            balances[event.primary_asset.symbol] = balances.get(event.primary_asset.symbol, Decimal(0)) + direction * abs(Decimal(event.primary_amount))
         year_events = [event for event in events if event.occurred_at.year == tax_year]
         warnings = ["This is a jurisdiction-neutral ledger review, not a tax calculation or filing-ready tax report."]
         missing_prices = [

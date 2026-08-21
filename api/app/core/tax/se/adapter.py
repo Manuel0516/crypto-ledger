@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.pricing.cache import get_historical_prices
 from app.core.pricing.config import configured_price_provider
+from app.core.pricing.provider import historical_unit_price
 from ..common import EffectiveEvent
 
 from ..adapter import AcquisitionRow, AssetSummaryRow, GainLossRow, IncomeRow, TaxCalculationResult, TaxReadinessResult
@@ -124,7 +125,7 @@ class SwedenAdapter:
                 continue  # internal transfer: moving wallets isn't a disposal under Swedish rules
             asset = event.primary_asset.symbol
             pos = positions.setdefault(asset, _Position())
-            amount = Decimal(event.primary_amount)
+            amount = abs(Decimal(event.primary_amount))
             year = event.occurred_at.year
             tax_event_type = "LP_REWARD" if is_liquidity_reward(event) else event.event_type
 
@@ -191,11 +192,11 @@ class SwedenAdapter:
             for fee in event.fees:
                 amount = Decimal(fee.fee_amount)
                 if fee.fee_asset_id == event.primary_asset_id and Decimal(event.primary_amount):
-                    total_fees += amount * (_sek_value(event) / Decimal(event.primary_amount))
+                    total_fees += amount * (_sek_value(event) / abs(Decimal(event.primary_amount)))
                 elif fee.fee_asset.coingecko_id:
                     prices = get_historical_prices(session, configured_price_provider(session), fee.fee_asset.coingecko_id, event.occurred_at, ["SEK"])
                     if "SEK" in prices:
-                        total_fees += amount * prices["SEK"][0]
+                        total_fees += amount * historical_unit_price(prices["SEK"])
                     else:
                         fee_unpriced = True
                 else:

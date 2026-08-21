@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowRight, Eye, Fingerprint, PencilLine, Plus, RotateCcw, Trash2 } from "lucide-react";
-import type { EventDetail, EditableEventField, Issue } from "../../types";
+import type { EventDetail, EditableEventField, FeeDetail, Issue } from "../../types";
 import { EDITABLE_EVENT_FIELDS, formatType } from "../../types";
 import { getJson, patchJson, postJson, putJson, deleteJson } from "../../lib/api";
 import { Drawer } from "../ui/Drawer";
@@ -239,7 +239,6 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
                   value={<CryptoAmount amount={event.secondary_amount} symbol={event.secondary_asset_symbol} className="text-[13px] text-ink" />}
                 />
               )}
-              <DetailRow label="Fees" value={feeSummary(data)} copyText={data.fees.length ? feeSummary(data) : undefined} wide />
               <DetailRow label="EUR value" value={<MoneyValue value={event.eur_value} />} />
               <DetailRow label="SEK value" value={<MoneyValue value={event.sek_value} currency="SEK" />} />
             </dl>
@@ -247,7 +246,7 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
 
           {/* Fees — editable list, not just the first one (plan §19) */}
           <Section title="Fees">
-            <FeesEditor eventId={eventId} fees={data.fees} onChange={async () => { await load(); notifyChange(); }} />
+            <FeesEditor eventId={eventId} fees={event.fees} onChange={async () => { await load(); notifyChange(); }} />
           </Section>
 
           {/* Structured network/exchange evidence (plan §17-18) */}
@@ -263,13 +262,6 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
                 {data.evidence.trade_id && <DetailRow label="Trade ID" value={<span className="font-mono text-[11px]">{data.evidence.trade_id}</span>} copyText={data.evidence.trade_id} wide />}
                 {data.evidence.deposit_id && <DetailRow label="Deposit ID" value={<span className="font-mono text-[11px]">{data.evidence.deposit_id}</span>} copyText={data.evidence.deposit_id} wide />}
                 {data.evidence.withdrawal_id && <DetailRow label="Withdrawal ID" value={<span className="font-mono text-[11px]">{data.evidence.withdrawal_id}</span>} copyText={data.evidence.withdrawal_id} wide />}
-                {data.evidence.transaction_fee_amount && (
-                  <DetailRow
-                    label="Transaction fee"
-                    value={`${data.evidence.transaction_fee_amount} ${data.evidence.transaction_fee_asset || "BNB"}`}
-                    copyText={`${data.evidence.transaction_fee_amount} ${data.evidence.transaction_fee_asset || "BNB"}`}
-                  />
-                )}
                 {data.evidence.gas_used && <DetailRow label="Gas used" value={data.evidence.gas_used} copyText={data.evidence.gas_used} />}
                 {data.evidence.gas_price && <DetailRow label="Gas price" value={`${data.evidence.gas_price} wei`} copyText={data.evidence.gas_price} />}
                 {data.evidence.transaction_nonce !== null && <DetailRow label="Nonce" value={data.evidence.transaction_nonce} />}
@@ -448,11 +440,6 @@ function CopyableValue({ text, children }: { text: string; children: React.React
   );
 }
 
-function feeSummary(data: EventDetail | null): string {
-  if (!data || data.fees.length === 0) return "—";
-  return data.fees.map((fee) => `${fee.amount} ${fee.asset_symbol}`).join(" · ");
-}
-
 function hasEvidence(evidence: EventDetail["evidence"]): boolean {
   return Object.values(evidence).some((value) => value !== null && value !== "");
 }
@@ -465,8 +452,9 @@ function isRestorable(data: EventDetail, field: string): boolean {
 
 const FEE_TYPES = ["NETWORK_FEE", "GAS_FEE", "EXCHANGE_FEE", "TRADING_FEE", "FUNDING_FEE", "LIGHTNING_FEE"];
 
-function FeesEditor({ eventId, fees, onChange }: { eventId: number; fees: EventDetail["fees"]; onChange: () => Promise<void> }) {
+function FeesEditor({ eventId, fees, onChange }: { eventId: number; fees: FeeDetail[]; onChange: () => Promise<void> }) {
   const [adding, setAdding] = useState(false);
+  const [editingFeeId, setEditingFeeId] = useState<number | null>(null);
   const [feeType, setFeeType] = useState("NETWORK_FEE");
   const [asset, setAsset] = useState("");
   const [amount, setAmount] = useState("");
@@ -474,23 +462,44 @@ function FeesEditor({ eventId, fees, onChange }: { eventId: number; fees: EventD
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const addFee = async () => {
+  const resetEditor = () => {
+    setAdding(false);
+    setEditingFeeId(null);
+    setFeeType("NETWORK_FEE");
+    setAsset("");
+    setAmount("");
+    setRecipient("");
+  };
+
+  const startEdit = (fee: FeeDetail) => {
+    setEditingFeeId(fee.id);
+    setFeeType(fee.fee_type);
+    setAsset(fee.asset_symbol);
+    setAmount(fee.amount);
+    setRecipient(fee.fee_recipient ?? "");
+    setError("");
+    setAdding(true);
+  };
+
+  const saveFee = async () => {
     setBusy(true);
     setError("");
     try {
-      await postJson(`/api/events/${eventId}/fees`, {
+      const payload = {
         fee_type: feeType,
         asset_symbol: asset,
         amount,
         fee_recipient: recipient || null,
-      });
-      setAsset("");
-      setAmount("");
-      setRecipient("");
-      setAdding(false);
+      };
+      if (editingFeeId === null) {
+        await postJson(`/api/events/${eventId}/fees`, payload);
+      } else {
+        await patchJson(`/api/events/${eventId}/fees/${editingFeeId}`, payload);
+      }
+      resetEditor();
       await onChange();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not add fee");
+      setError(reason instanceof Error ? reason.message : "Could not save fee");
     } finally {
       setBusy(false);
     }
@@ -527,14 +536,24 @@ function FeesEditor({ eventId, fees, onChange }: { eventId: number; fees: EventD
               </CopyableValue>
             )}
           </div>
-          <button
-            onClick={() => void removeFee(fee.id)}
-            disabled={busy}
-            aria-label="Remove fee"
-            className="shrink-0 rounded-lg p-1.5 text-faint transition-colors hover:bg-bad-soft hover:text-bad disabled:opacity-50"
-          >
-            <Trash2 size={13} />
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              onClick={() => startEdit(fee)}
+              disabled={busy}
+              aria-label={`Edit fee ${fee.amount} ${fee.asset_symbol}`}
+              className="rounded-lg p-1.5 text-faint transition-colors hover:bg-base hover:text-ink disabled:opacity-50"
+            >
+              <PencilLine size={13} />
+            </button>
+            <button
+              onClick={() => void removeFee(fee.id)}
+              disabled={busy}
+              aria-label="Remove fee"
+              className="rounded-lg p-1.5 text-faint transition-colors hover:bg-bad-soft hover:text-bad disabled:opacity-50"
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
         </div>
       ))}
 
@@ -552,10 +571,10 @@ function FeesEditor({ eventId, fees, onChange }: { eventId: number; fees: EventD
           </div>
           {error && <p className="text-[11px] text-bad">{error}</p>}
           <div className="flex gap-2">
-            <Button size="sm" variant="primary" onClick={() => void addFee()} loading={busy} disabled={!asset || !amount}>
-              Add fee
+            <Button size="sm" variant="primary" onClick={() => void saveFee()} loading={busy} disabled={!asset || !amount}>
+              {editingFeeId === null ? "Add fee" : "Save fee"}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>
+            <Button size="sm" variant="ghost" onClick={resetEditor}>
               Cancel
             </Button>
           </div>

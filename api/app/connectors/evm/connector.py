@@ -513,7 +513,7 @@ class EVMAddressConnector:
                 fees.append(NormalizedFee(fee_type="GAS_FEE", asset_symbol=native_symbol, amount=payload["_gas_eth"]))
             token_id = payload.get("_position_token_id") or "?"
             return NormalizedEvent(
-                event_type="LP_DEPOSIT",
+                event_type="LIQUIDITY",
                 event_subtype="dex_lp_deposit",
                 direction="-",
                 status="COMPLETE",
@@ -607,7 +607,7 @@ def _leg_gas_fee(leg: dict, group: list[tuple[dict, str]]) -> float | None:
 
 def _merge_lp_deposits(entries: Iterable[tuple[dict, str]], address: str) -> Iterable[tuple[dict, str]]:
     """Recognize minting a liquidity position (plan §15's liquidity case) as
-    one LP_DEPOSIT event instead of a bare NFT_MINT plus the token legs that
+    one LIQUIDITY event instead of a bare NFT_MINT plus the token legs that
     funded it. A position-manager mint transaction is a fresh position NFT
     (from the zero address) at a known ``_LP_POSITION_MANAGERS`` contract,
     alongside one or two native/token legs the wallet itself sent in the same

@@ -13,9 +13,9 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.api.events import ManualEventIn, create_manual_event
+from app.api.events import FeeIn, ManualEventIn, create_manual_event, get_event
 from app.core.ledger.reconcile import compute_account_holdings
-from app.db.models import Account, Base, Event
+from app.db.models import Account, Base, Event, Fee
 
 
 OCCURRED_AT = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
@@ -98,6 +98,35 @@ class ManualOpeningBalanceTests(unittest.TestCase):
                 symbol="BTC",
                 amount="1",
                 occurred_at=OCCURRED_AT.isoformat(),
+            )
+
+    def test_manual_activity_uses_one_canonical_fees_collection(self) -> None:
+        with patch("app.core.ledger.service.refresh_valuations"):
+            body = ManualEventIn(
+                event_type="WITHDRAWAL",
+                symbol="ETH",
+                amount="-1",
+                occurred_at=OCCURRED_AT.isoformat(),
+                account_id=self.account.id,
+                fees=[FeeIn(fee_type="GAS_FEE", asset_symbol="ETH", amount="0.01")],
+            )
+            event_result = create_manual_event(body, self.session)
+
+        event = self.session.get(Event, event_result["id"])
+        self.assertIsNotNone(event)
+        self.assertEqual(self.session.query(Fee).filter_by(event_id=event.id).count(), 1)
+        detail = get_event(event.id, self.session)
+        self.assertEqual(len(detail["event"]["fees"]), 1)
+        self.assertNotIn("fees", detail)
+
+        with self.assertRaises(ValidationError):
+            ManualEventIn(
+                event_type="WITHDRAWAL",
+                symbol="ETH",
+                amount="-1",
+                occurred_at=OCCURRED_AT.isoformat(),
+                fee_asset="ETH",
+                fee_amount="0.01",
             )
 
 

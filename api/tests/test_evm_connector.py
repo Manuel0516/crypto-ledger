@@ -569,7 +569,7 @@ class EVMConnectorTests(unittest.TestCase):
 
         raw = RawRecord(source_id="evm:bsc:test", external_id=external_id, source_timestamp=OCCURRED_AT, payload={**payload, "_network": "BNB Smart Chain"})
         event = self.connector.normalize(raw)
-        self.assertEqual(event.event_type, "LP_DEPOSIT")
+        self.assertEqual(event.event_type, "LIQUIDITY")
         self.assertEqual(event.asset_symbol, "BNB")
         self.assertEqual(event.secondary_asset_symbol, "USDC")
         self.assertIn("PancakeSwap V3", event.notes)

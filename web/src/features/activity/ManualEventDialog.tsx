@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Upload } from "lucide-react";
 import type { Account, EventDetail } from "../../types";
-import { apiFetch, getJson, patchJson, putJson } from "../../lib/api";
+import { apiFetch, getJson, patchJson, postJson, putJson } from "../../lib/api";
 import { useData } from "../../hooks/useData";
 import { Dialog } from "../../components/ui/Dialog";
 import { Button } from "../../components/ui/Button";
@@ -75,8 +75,8 @@ function eventToForm(data: EventDetail): SimpleForm {
     from_wallet: event.address_from ?? "",
     eur_value: event.eur_value ?? "",
     sek_value: event.sek_value ?? "",
-    fee_asset: data.fees[0]?.asset_symbol ?? "",
-    fee_amount: data.fees[0]?.amount ?? "",
+    fee_asset: data.event.fees[0]?.asset_symbol ?? "",
+    fee_amount: data.event.fees[0]?.amount ?? "",
     tx_hash: event.tx_hash ?? "",
   };
 }
@@ -194,16 +194,21 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
             : selectedAccount?.address ?? selectedAccount?.name ?? null;
 
       if (editEvent) {
+        const original = editEvent.event;
+        // A second leg has to exist before its amount can be corrected the
+        // normal way — an event with no secondary_asset_id yet needs the
+        // dedicated swap-leg endpoint instead of a plain field override.
+        const needsNewSwapLeg = isSwap && original.secondary_asset_id == null;
+
         const values: Record<string, string | null> = {
-          event_type: form.event_type,
+          event_type: needsNewSwapLeg ? original.event_type : form.event_type,
           primary_amount: primaryAmount,
-          secondary_amount: isSwap ? form.secondary_amount.trim() || null : null,
+          secondary_amount: isSwap && !needsNewSwapLeg ? form.secondary_amount.trim() || null : original.secondary_amount,
           occurred_at: new Date(form.occurred_at).toISOString(),
           address_from: addressFrom,
           address_to: addressTo,
           tx_hash: form.tx_hash.trim() || null,
         };
-        const original = editEvent.event;
         const originalValues: Record<string, string | null> = {
           event_type: original.event_type,
           primary_amount: original.primary_amount,
@@ -215,6 +220,15 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
         };
         for (const [field, value] of Object.entries(values)) {
           if (value !== originalValues[field]) await patchJson(`/api/events/${editEvent.event.id}`, { field, value, reason: reason.trim() });
+        }
+        if (needsNewSwapLeg) {
+          await postJson(`/api/events/${editEvent.event.id}/swap-leg`, {
+            secondary_asset_symbol: form.secondary_symbol.trim().toUpperCase(),
+            secondary_asset_network: form.asset_network.trim() || null,
+            secondary_amount: form.secondary_amount.trim(),
+            event_type: "SWAP",
+            reason: reason.trim(),
+          });
         }
         const currentEur = editEvent.valuations.find((value) => value.quote_currency === "EUR")?.total_value ?? "";
         const currentSek = editEvent.valuations.find((value) => value.quote_currency === "SEK")?.total_value ?? "";
@@ -240,9 +254,11 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
           address_from: addressFrom,
           address_to: addressTo,
           tx_hash: form.tx_hash.trim() || null,
-          fee_asset: form.fee_asset.trim().toUpperCase() || null,
-          fee_amount: form.fee_amount.trim() || null,
-          fee_type: "NETWORK_FEE",
+          fees: form.fee_asset.trim() && form.fee_amount.trim() ? [{
+            fee_type: "NETWORK_FEE",
+            asset_symbol: form.fee_asset.trim().toUpperCase(),
+            amount: form.fee_amount.trim(),
+          }] : [],
           eur_value: form.eur_value.trim() || null,
           sek_value: form.sek_value.trim() || null,
         }),
@@ -323,8 +339,17 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
               }}
             />
           </div>
-          <Field label="Fee amount (optional)" htmlFor="activity-fee-amount"><Input id="activity-fee-amount" value={form.fee_amount} onChange={(event) => change("fee_amount", event.target.value)} placeholder="0.0001" inputMode="decimal" /></Field>
-          <Field label="Fee asset" htmlFor="activity-fee-asset"><Input id="activity-fee-asset" value={form.fee_asset} onChange={(event) => change("fee_asset", event.target.value.toUpperCase())} placeholder={form.symbol || "ETH"} /></Field>
+          {!editEvent ? (
+            <div className="sm:col-span-2">
+              <span className="text-[11px] font-medium text-faint">Fee (optional)</span>
+              <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+                <Input id="activity-fee-amount" value={form.fee_amount} onChange={(event) => change("fee_amount", event.target.value)} placeholder="Amount" inputMode="decimal" aria-label="Fee amount" />
+                <Input id="activity-fee-asset" value={form.fee_asset} onChange={(event) => change("fee_asset", event.target.value.toUpperCase())} placeholder={form.symbol || "Asset"} aria-label="Fee asset" />
+              </div>
+            </div>
+          ) : (
+            <p className="sm:col-span-2 text-[11px] text-soft">Fees are managed in the activity details so every fee uses the same fee list.</p>
+          )}
         </div>
 
         <Field label="Transaction hash (optional)" htmlFor="activity-tx-hash"><Input id="activity-tx-hash" value={form.tx_hash} onChange={(event) => change("tx_hash", event.target.value)} placeholder="Blockchain transaction hash" /></Field>

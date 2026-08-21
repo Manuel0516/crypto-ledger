@@ -90,9 +90,7 @@ export interface EventSummary {
   source_timezone: string | null;
   imported_at: string;
   account_id: number | null;
-  fee_amount: string | null;
-  fee_asset_symbol: string | null;
-  fee_count: number;
+  fees: FeeDetail[];
   eur_value: string | null;
   sek_value: string | null;
   modified: boolean;
@@ -125,8 +123,6 @@ export interface EventEvidence {
   trade_id: string | null;
   deposit_id: string | null;
   withdrawal_id: string | null;
-  transaction_fee_amount: string | null;
-  transaction_fee_asset: string | null;
   gas_used: string | null;
   gas_price: string | null;
   transaction_input: string | null;
@@ -169,7 +165,6 @@ export interface OverrideDetail {
 export interface EventDetail {
   event: EventSummary;
   valuations: Valuation[];
-  fees: FeeDetail[];
   issues: Issue[];
   raw: {
     id: number;
@@ -593,9 +588,7 @@ export const EVENT_TYPES: Record<string, EventTypeMeta> = {
   NFT_BUY: { label: "Buy NFT", kind: "nft" },
   NFT_SELL: { label: "Sell NFT", kind: "nft" },
   NFT_TRANSFER: { label: "Transfer NFT", kind: "nft" },
-  LP_DEPOSIT: { label: "LP deposit", kind: "other" },
-  LP_WITHDRAWAL: { label: "LP withdrawal", kind: "other" },
-  LP_REWARD: { label: "LP reward", kind: "income" },
+  LIQUIDITY: { label: "Liquidity", kind: "income" },
   BRIDGE_OUT: { label: "Bridge out", kind: "move" },
   BRIDGE_IN: { label: "Bridge in", kind: "move" },
   LIGHTNING_SEND: { label: "Lightning send", kind: "lightning" },
