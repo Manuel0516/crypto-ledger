@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from decimal import Decimal, InvalidOperation
 from typing import Iterable
 
@@ -39,6 +40,13 @@ _LOG_RPC_ENDPOINTS = (
 
 _INITIAL_LOG_WINDOW_BLOCKS = 2000
 _MIN_LOG_WINDOW_BLOCKS = 25
+# A single flaky response — seen in practice from a decentralized relay
+# (1rpc.io routes each call to one of several backend nodes; an unlucky
+# route can return a spurious error a retry lands past) — shouldn't cost an
+# endpoint that's otherwise working. Retried in place before either
+# shrinking the window or giving up on the endpoint entirely.
+_MAX_TRANSIENT_RETRIES = 2
+_TRANSIENT_RETRY_DELAY_SECONDS = 0.5
 # Blocks to hold back from the chain tip before treating a transfer as
 # final. BSC blocks are fast (~3s) but not instantly irreversible; a short
 # reorg could otherwise make this app import a transfer that later
@@ -64,9 +72,17 @@ _BALANCE_OF_SELECTOR = "0x70a08231"  # balanceOf(address)
 # JSON-RPC error messages seen in practice for "this window is too big" —
 # matched case-insensitively as a substring, since wording differs by
 # provider (publicnode: "query exceeds max results ..."; BNB Chain's own
-# nodes: "limit exceeded"). Anything else is treated as a real failure of
-# that endpoint, not a signal to shrink the window.
-_WINDOW_TOO_LARGE_MARKERS = ("limit exceeded", "exceeds max results", "block range", "blocks range", "too many")
+# nodes: "limit exceeded"; 1rpc.io: "log query range must not exceed N
+# blocks"). Anything else gets a bounded same-window retry (see
+# _MAX_TRANSIENT_RETRIES) before being treated as a real failure of that
+# endpoint — 1rpc.io in particular routes each call to one of several
+# backend nodes, and "header not found" / "historical state is not
+# available" have both been observed for a block range a *different*
+# backend serves without complaint moments later.
+_WINDOW_TOO_LARGE_MARKERS = ("limit exceeded", "exceeds max results", "block range", "blocks range", "too many", "must not exceed")
+
+
+_HEADERS = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (compatible; crypto-ledger/1.0)"}
 
 
 def _call_endpoint(url: str, method: str, params: list) -> object:
@@ -74,6 +90,7 @@ def _call_endpoint(url: str, method: str, params: list) -> object:
         response = httpx.post(
             url,
             json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+            headers=_HEADERS,
             timeout=20.0,
         )
         response.raise_for_status()
@@ -194,15 +211,20 @@ def _scan_logs_for_topic(contract: str, wallet_topic: str, *, incoming: bool, fr
     """Windowed eth_getLogs scan for one direction (incoming or outgoing)
     of Transfer events on one contract. Adapts to whichever window size
     the currently-used endpoint will actually serve: shrinks on a
-    "too large" error and retries the same start point (never skips
-    blocks), and only after shrinking below the floor does it give up on
-    the current endpoint and move to the next one in _LOG_RPC_ENDPOINTS —
-    from the same start point, so a mid-scan endpoint failure never loses
-    a block range, it just gets served by a different provider."""
+    confirmed "too large" error and retries the same start point (never
+    skips blocks); any other failure gets a few same-window retries first
+    (see _MAX_TRANSIENT_RETRIES — a decentralized relay like 1rpc.io routes
+    each call to one of several backend nodes, and a retry often lands on
+    a healthy one). Only once retries are exhausted at the floor window
+    does it give up on the current endpoint and move to the next one in
+    _LOG_RPC_ENDPOINTS — from the same start point, so a mid-scan endpoint
+    failure never loses a block range, it just gets served by a different
+    provider."""
     topics = [_TRANSFER_TOPIC, None, wallet_topic] if incoming else [_TRANSFER_TOPIC, wallet_topic]
     endpoint_index = 0
     window = _INITIAL_LOG_WINDOW_BLOCKS
     cursor = from_block
+    transient_retries = 0
     while cursor <= to_block:
         window_end = min(cursor + window - 1, to_block)
         url = _LOG_RPC_ENDPOINTS[endpoint_index]
@@ -215,13 +237,20 @@ def _scan_logs_for_topic(contract: str, wallet_topic: str, *, incoming: bool, fr
         except ConnectorUnavailable as exc:
             if window > _MIN_LOG_WINDOW_BLOCKS and _is_window_too_large(str(exc)):
                 window = max(_MIN_LOG_WINDOW_BLOCKS, window // 4)
+                transient_retries = 0
                 continue
+            if transient_retries < _MAX_TRANSIENT_RETRIES:
+                transient_retries += 1
+                time.sleep(_TRANSIENT_RETRY_DELAY_SECONDS)
+                continue
+            transient_retries = 0
             endpoint_index += 1
             if endpoint_index >= len(_LOG_RPC_ENDPOINTS):
                 raise ConnectorUnavailable(f"Could not scan BSC transfer logs for {contract}: {exc}") from exc
             window = _INITIAL_LOG_WINDOW_BLOCKS
             continue
 
+        transient_retries = 0
         for log in result or []:
             if isinstance(log, dict) and not log.get("removed"):
                 decoded = _decode_transfer_log(log)
@@ -272,10 +301,26 @@ def fetch_token_transfers(address: str, contracts: list[str], since) -> Iterable
     block_timestamps: dict[int, int] = {}
     contract_meta: dict[str, tuple[int, str | None]] = {}
 
+    # A failure scanning one contract (both public log endpoints down or
+    # erroring for that specific range — real, if infrequent, given this
+    # runs against free, unpaid infrastructure) must not cost every other
+    # contract its data for this sync round too. Each (contract, direction)
+    # pair degrades independently, same as _paged_optional does for the
+    # Etherscan-key path's tokentx/tokennfttx/token1155tx endpoints. Only
+    # after every pair has been attempted does a real failure get raised —
+    # keeping whatever succeeded (sync_account() ingests everything already
+    # yielded before an exception) while still reporting this round as
+    # incomplete, so last_sync isn't advanced past a real gap.
+    failures: list[str] = []
     for contract in contracts:
         contract = contract.lower()
         for incoming in (True, False):
-            for log in _scan_logs_for_topic(contract, wallet_topic, incoming=incoming, from_block=from_block, to_block=to_block):
+            try:
+                logs = list(_scan_logs_for_topic(contract, wallet_topic, incoming=incoming, from_block=from_block, to_block=to_block))
+            except ConnectorUnavailable as exc:
+                failures.append(f"{contract} ({'incoming' if incoming else 'outgoing'}): {exc}")
+                continue
+            for log in logs:
                 block_number = int(log["blockNumber"])
                 if block_number not in block_timestamps:
                     block_data = _rpc_call("eth_getBlockByNumber", [hex(block_number), False])
@@ -290,3 +335,6 @@ def fetch_token_transfers(address: str, contracts: list[str], since) -> Iterable
                     "tokenName": symbol or "Unknown token",
                     "timeStamp": str(block_timestamps[block_number]),
                 }
+
+    if failures:
+        raise ConnectorUnavailable(f"Could not scan every configured contract this round: {'; '.join(failures)}")

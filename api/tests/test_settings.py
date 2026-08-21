@@ -105,7 +105,15 @@ class SettingsTests(unittest.TestCase):
         self.session.commit()
 
         update_settings(SettingsUpdate(display_currency="USD", valuation_currencies=["EUR", "SEK", "USD"]), self.session)
-        result = overview(self.session)
+        # overview() fetches a live "current price" snapshot on top of the
+        # historical Valuation rows above (see app.api.overview) — mock the
+        # provider so this test verifies currency selection, not network
+        # access to a real price API. An empty result here means overview()
+        # falls back to the most recent historical Valuation, which is
+        # exactly the deterministic value this test seeded.
+        with patch("app.api.overview.configured_price_provider") as mock_provider:
+            mock_provider.return_value.fetch_current.return_value = {}
+            result = overview(self.session)
 
         self.assertEqual(result["display_currency"], "USD")
         self.assertEqual(result["portfolio_display"], 24.0)

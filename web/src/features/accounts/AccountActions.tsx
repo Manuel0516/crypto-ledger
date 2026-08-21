@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, Check, History, Pause, Pencil, Play, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, History, Pause, Pencil, Play, RefreshCw, Trash2, Upload, WalletCards, X } from "lucide-react";
 import type { Account, NWCPermissionsResult, Page, ReconcileResult, SyncResult } from "../../types";
 import { Dialog } from "../../components/ui/Dialog";
 import { Badge } from "../../components/ui/Badge";
@@ -10,6 +10,7 @@ import { accountKindLabel } from "../../components/domain/SourceCard";
 import { connectorSummary, connectorTypeMeta, EVM_CHAINS } from "./connectorTypes";
 import { apiFetch, getJson, patchJson, postJson, uploadFile } from "../../lib/api";
 import { relativeTime } from "../../lib/format";
+import { OpeningBalanceDialog } from "./OpeningBalanceDialog";
 
 // The permission labels this app actually relies on — a connection granting
 // exactly these (and nothing more) is the ideal, minimum-permission case.
@@ -33,6 +34,7 @@ interface AccountActionsProps {
 export function AccountActions({ account, onClose, onNavigate, onChanged }: AccountActionsProps) {
   const label = accountKindLabel(account.kind);
   const [editing, setEditing] = useState(false);
+  const [openingBalanceOpen, setOpeningBalanceOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -159,6 +161,9 @@ export function AccountActions({ account, onClose, onNavigate, onChanged }: Acco
   if (editing) {
     return <EditAccountDialog account={account} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); onChanged(); }} />;
   }
+  if (openingBalanceOpen) {
+    return <OpeningBalanceDialog account={account} onClose={() => setOpeningBalanceOpen(false)} onSaved={() => { setOpeningBalanceOpen(false); onChanged(); }} />;
+  }
 
   const summary = connectorSummary(account);
 
@@ -273,6 +278,9 @@ export function AccountActions({ account, onClose, onNavigate, onChanged }: Acco
               <ActionButton icon={<RefreshCw size={16} />} label="Sync" disabled />
             )}
             {!isArchived && <ActionButton icon={<Pencil size={16} />} label="Edit" onClick={() => setEditing(true)} />}
+            {!isArchived && account.connector_type === "manual" && (
+              <ActionButton icon={<WalletCards size={16} />} label="Opening balance" onClick={() => setOpeningBalanceOpen(true)} />
+            )}
             {!isArchived && (
               <ActionButton
                 icon={account.paused ? <Play size={16} /> : <Pause size={16} />}

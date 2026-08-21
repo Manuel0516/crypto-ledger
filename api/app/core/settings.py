@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,36 @@ SUPPORTED_PRICE_PROVIDERS = ("coingecko",)
 THEME_OPTIONS = ("system", "light", "dark")
 EVIDENCE_RETENTION_POLICY = "indefinite"
 DEFAULT_RP2_PLUGINS = ("rp2_es",)
+
+
+def minimum_activity_threshold(settings: AppSettings) -> Decimal:
+    """Return the configured minimum value, normalized for comparisons."""
+    try:
+        value = Decimal(str(settings.minimum_activity_value))
+    except (InvalidOperation, TypeError, ValueError):
+        value = Decimal("0.05")
+    return max(value, Decimal("0"))
+
+
+def is_under_activity_threshold(event, settings: AppSettings) -> bool:
+    """Whether an event has a known value below the configured threshold.
+
+    Events without a valuation stay included. A missing price is a data-quality
+    issue, not evidence that an event is economically insignificant.
+    """
+    threshold = minimum_activity_threshold(settings)
+    if threshold <= 0:
+        return False
+    valuation = next(
+        (item for item in event.valuations if item.quote_currency == settings.minimum_activity_currency),
+        None,
+    )
+    if valuation is None:
+        return False
+    try:
+        return Decimal(str(valuation.total_value)) < threshold
+    except (InvalidOperation, TypeError, ValueError):
+        return False
 
 
 def valuation_currencies(settings: AppSettings) -> tuple[str, ...]:

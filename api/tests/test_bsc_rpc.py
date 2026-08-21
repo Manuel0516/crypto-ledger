@@ -197,8 +197,93 @@ class LogScanningTests(unittest.TestCase):
         self.assertTrue(any(w <= bsc_rpc._MIN_LOG_WINDOW_BLOCKS for w in call_log))
         self.assertTrue(len(results) >= 1)
 
+    def test_a_transient_non_size_error_is_retried_in_place_before_switching_endpoints(self) -> None:
+        # Real-world case: 1rpc.io returned "header not found" for a call
+        # that succeeded moments later against the exact same range — a
+        # decentralized relay routing to a different backend node on
+        # retry, not a real "this endpoint can't serve this" signal.
+        good_log = {
+            "address": CONTRACT,
+            "topics": [bsc_rpc._TRANSFER_TOPIC, "0x" + "0" * 24 + CONTRACT[2:], "0x" + "0" * 24 + ADDRESS[2:]],
+            "data": hex(10**18),
+            "transactionHash": "0xgood",
+            "logIndex": "0x0",
+            "blockNumber": "0x5",
+        }
+        calls = {"n": 0}
+
+        def side_effect(url, json=None, **kw):
+            calls["n"] += 1
+            if json["method"] == "eth_getLogs":
+                if calls["n"] == 1:
+                    return _err("header not found", code=-32000)
+                return _ok([good_log])
+            raise AssertionError(f"unexpected method {json['method']}")
+
+        with (
+            patch("app.connectors.evm.bsc_rpc.httpx.post", side_effect=side_effect),
+            patch("app.connectors.evm.bsc_rpc.time.sleep") as mock_sleep,
+        ):
+            results = list(
+                bsc_rpc._scan_logs_for_topic(CONTRACT, "0x" + "0" * 24 + ADDRESS[2:], incoming=True, from_block=0, to_block=50)
+            )
+        self.assertEqual(len(results), 1)
+        mock_sleep.assert_called_once()
+
     def test_fetch_token_transfers_with_no_contracts_yields_nothing(self) -> None:
         self.assertEqual(list(bsc_rpc.fetch_token_transfers(ADDRESS, [], None)), [])
+
+    def test_one_contract_failing_does_not_lose_another_contracts_data(self) -> None:
+        # Real-world case that motivated this: public infra had a transient
+        # hiccup scanning one of several default-tracked contracts. That
+        # must not cost every other (working) contract its data for the
+        # round — each (contract, direction) pair degrades independently,
+        # and only after every pair is attempted does a real failure
+        # surface, so the caller still keeps everything that succeeded.
+        from datetime import datetime, timezone
+
+        bad_contract = CONTRACT
+        good_contract = "0x3333333333333333333333333333333333333333"
+        since = datetime.fromtimestamp(1_700_000_000 - 20, tz=timezone.utc)
+        good_log = {
+            "address": good_contract,
+            "topics": [bsc_rpc._TRANSFER_TOPIC, "0x" + "0" * 24 + good_contract[2:], "0x" + "0" * 24 + ADDRESS[2:]],
+            "data": hex(10**18),
+            "transactionHash": "0xgood",
+            "logIndex": "0x0",
+            "blockNumber": "0x5",
+        }
+
+        def side_effect(url, json=None, **kw):
+            method = json["method"]
+            if method == "eth_blockNumber":
+                return _ok(hex(10_100))
+            if method == "eth_getBlockByNumber":
+                return _ok({"timestamp": hex(1_700_000_000)})
+            if method == "eth_getLogs":
+                contract = json["params"][0]["address"]
+                if contract == bad_contract:
+                    return _err("boom", code=-32000)  # not a "too large" marker — exhausts both endpoints fast
+                if contract == good_contract and json["params"][0]["topics"][1] is None:
+                    return _ok([good_log])  # incoming scan only
+                return _ok([])
+            if method == "eth_call":
+                return _ok("0x")
+            raise AssertionError(f"unexpected method {method}")
+
+        with (
+            patch("app.connectors.evm.bsc_rpc.httpx.post", side_effect=side_effect),
+            patch("app.connectors.evm.bsc_rpc.time.sleep"),
+        ):
+            gen = bsc_rpc.fetch_token_transfers(ADDRESS, [bad_contract, good_contract], since)
+            yielded = []
+            with self.assertRaises(ConnectorUnavailable) as ctx:
+                for item in gen:
+                    yielded.append(item)
+
+        self.assertEqual(len(yielded), 1)
+        self.assertEqual(yielded[0]["contractAddress"], good_contract)
+        self.assertIn(bad_contract, str(ctx.exception))
 
 
 if __name__ == "__main__":

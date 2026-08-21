@@ -3,10 +3,10 @@ from __future__ import annotations
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.pricing.config import configured_price_provider
-from app.core.settings import get_or_create_settings
+from app.core.settings import get_or_create_settings, is_under_activity_threshold, minimum_activity_threshold
 from app.db.models import Account, AccountBalance, Asset, Event, Issue, SyncState, Valuation
 
 from .deps import get_session
@@ -34,7 +34,7 @@ def overview(session: Session = Depends(get_session)):
         if live_account_ids
         else []
     )
-    events = session.query(Event).all()
+    events = session.query(Event).options(selectinload(Event.valuations), selectinload(Event.fees)).all()
     assets_by_id: dict[int, Asset] = {asset.id: asset for asset in session.query(Asset).all()}
 
     def is_nft(asset_id: int | None) -> bool:
@@ -47,9 +47,10 @@ def overview(session: Session = Depends(get_session)):
     # deliberately kept from events because the explorer balance endpoints do
     # not expose a portable ERC-721/ERC-1155 inventory. A NULL account_id
     # (manual/legacy events) is always computed too.
+    visible_events = [event for event in events if not is_under_activity_threshold(event, settings)]
     computed_events = [
         event
-        for event in events
+        for event in visible_events
         if event.account_id not in live_account_ids or event_has_nft(event)
     ]
 
@@ -96,7 +97,7 @@ def overview(session: Session = Depends(get_session)):
     account_holdings: dict[int, dict[int, Decimal]] = {account.id: {} for account in accounts}
     for row in balance_rows:
         apply(account_holdings.setdefault(row.account_id, {}), row.asset_id, Decimal(row.amount))
-    for event in events:
+    for event in visible_events:
         if event.account_id is None or event.account_id not in account_holdings:
             continue
         if event.account_id in live_account_ids:
@@ -134,7 +135,7 @@ def overview(session: Session = Depends(get_session)):
         try:
             current_by_provider = configured_price_provider(session).fetch_current(
                 list(provider_asset_ids),
-                list(dict.fromkeys(["EUR", "SEK", display_currency])),
+                list(dict.fromkeys(["EUR", "SEK", display_currency, settings.minimum_activity_currency])),
             )
         except Exception:
             current_by_provider = {}
@@ -148,6 +149,17 @@ def overview(session: Session = Depends(get_session)):
                 current_prices[(asset_id, currency.upper())] = Decimal(str(price))
 
     totals = {currency: Decimal(0) for currency in ("EUR", "SEK", display_currency)}
+    minimum_value = minimum_activity_threshold(settings)
+
+    def is_small_holding(asset_id: int, amount: Decimal) -> bool:
+        if minimum_value <= 0:
+            return False
+        asset = assets_by_id.get(asset_id)
+        if asset is None:
+            return False
+        price = current_prices.get((asset_id, settings.minimum_activity_currency), latest_prices.get((asset_id, settings.minimum_activity_currency)))
+        return price is not None and amount * price < minimum_value
+
     def holding_payload(asset_id: int, amount: Decimal) -> dict:
         asset = assets_by_id[asset_id]
         def price(currency: str) -> Decimal:
@@ -176,7 +188,7 @@ def overview(session: Session = Depends(get_session)):
         # ledger balances available in Activity, reconciliation and reports,
         # but do not present them as portfolio assets or subtract them from
         # the headline total.
-        if amount <= 0:
+        if amount <= 0 or is_small_holding(asset_id, amount):
             continue
         item = holding_payload(asset_id, amount)
         totals["EUR"] += Decimal(str(item["value_eur"]))
@@ -192,7 +204,7 @@ def overview(session: Session = Depends(get_session)):
         balances = [
             holding_payload(asset_id, amount)
             for asset_id, amount in account_holdings.get(account.id, {}).items()
-            if amount > 0
+            if amount > 0 and not is_small_holding(asset_id, amount)
         ]
         balances.sort(key=lambda item: (item["value_display"], item["symbol"]), reverse=True)
         account_payloads.append(

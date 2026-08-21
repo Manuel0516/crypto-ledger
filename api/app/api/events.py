@@ -14,7 +14,7 @@ from app.connectors.manual import ManualConnector
 from app.core.assets.registry import get_or_create_asset
 from app.core.ledger.overrides import EDITABLE_FIELDS, apply_override, effective_values, restore_automatic_value
 from app.core.ledger.service import ingest, refresh_valuations
-from app.core.settings import get_or_create_settings
+from app.core.settings import get_or_create_settings, minimum_activity_threshold
 from app.db.models import Account, Asset, Event, EventLink, Fee, Issue, Override, RawEvent, Valuation
 
 from .deps import get_session
@@ -145,6 +145,7 @@ def list_events(
     internal: bool | None = None,
     resolved: bool | None = None,
     search: str | None = None,
+    under_threshold: bool = False,
     session: Session = Depends(get_session),
 ):
     """Query the unified ledger server-side; never load the entire history in the browser."""
@@ -152,22 +153,27 @@ def list_events(
     account_names = {name for (name,) in session.query(Account.name).all()}
     open_issue_ids = {eid for (eid,) in session.query(Issue.event_id).filter(Issue.resolved.is_(False), Issue.event_id.isnot(None))}
     query = session.query(Event).join(Event.primary_asset).outerjoin(Event.raw_event)
-    # This is a presentation filter only. The canonical event, raw evidence,
-    # exports and tax calculations remain untouched. Unpriced events stay
-    # visible because hiding an event with missing valuation data would turn a
-    # pricing problem into silent data loss.
-    try:
-        minimum_value = Decimal(str(settings.minimum_activity_value))
-    except (InvalidOperation, TypeError, ValueError):
-        minimum_value = Decimal("0.05")
+    # The default view is a presentation filter. The separate under-threshold
+    # view exposes the records it excludes. Unpriced events stay visible
+    # because hiding an event with missing valuation data would turn a pricing
+    # problem into silent data loss.
+    minimum_value = minimum_activity_threshold(settings)
     if minimum_value > 0:
         query = (
             query.outerjoin(
                 Valuation,
                 and_(Valuation.event_id == Event.id, Valuation.quote_currency == settings.minimum_activity_currency),
             )
-            .filter(or_(Valuation.id.is_(None), cast(Valuation.total_value, Numeric) >= minimum_value))
+            .filter(
+                and_(Valuation.id.isnot(None), cast(Valuation.total_value, Numeric) < minimum_value)
+                if under_threshold
+                else or_(Valuation.id.is_(None), cast(Valuation.total_value, Numeric) >= minimum_value)
+            )
         )
+    elif under_threshold:
+        # A zero threshold means nothing is excluded, so the recovery view is
+        # intentionally empty rather than showing all activity.
+        query = query.filter(Event.id == -1)
     if date_from:
         query = query.filter(Event.occurred_at >= date_from)
     if date_to:
@@ -423,7 +429,7 @@ class ManualEventIn(BaseModel):
 def _apply_manual_valuation(session: Session, event: Event, currency: str, total_value: str | None) -> None:
     if not total_value:
         return
-    amount = Decimal(event.primary_amount)
+    amount = abs(Decimal(event.primary_amount))
     if amount == 0:
         return
     total = Decimal(total_value)
@@ -469,12 +475,21 @@ def _upsert_valuation(session: Session, event: Event, currency: str, unit_price:
 def create_manual_event(body: ManualEventIn, session: Session = Depends(get_session)):
     payload = body.model_dump()
     account_id = None
+    account = None
     if body.account_id is not None:
         account = session.get(Account, body.account_id)
         if account is None:
             raise HTTPException(404, "Account not found")
         payload["source_label"] = account.name
         account_id = account.id
+
+    if body.event_subtype == "opening_balance":
+        if account is None or account.connector_type != "manual":
+            raise HTTPException(400, "Opening balances can only be attached to manual linked accounts")
+        if Decimal(body.amount) <= 0:
+            raise HTTPException(400, "An opening balance must be a positive amount")
+        if session.query(Event).filter_by(account_id=account.id, event_subtype="opening_balance").first() is not None:
+            raise HTTPException(409, "This manual account already has an opening balance; correct that event from Activity instead")
 
     external_id = f"{payload['occurred_at']}-{payload['amount']}-{payload['symbol']}-{payload.get('tx_hash') or ''}"
     raw = RawRecord(
@@ -654,7 +669,9 @@ def set_valuation(event_id: int, currency: str, body: ValuationIn, session: Sess
     currency = currency.upper()
     if body.unit_price is None and body.total_value is None:
         raise HTTPException(400, "Provide unit_price or total_value")
-    amount = Decimal(event.primary_amount)
+    amount = abs(Decimal(event.primary_amount))
+    if amount == 0:
+        raise HTTPException(400, "Cannot price an event with zero amount")
     unit_price = Decimal(body.unit_price) if body.unit_price is not None else Decimal(body.total_value) / amount
     total = (amount * unit_price).quantize(Decimal("0.01"))
     previous = session.query(Valuation).filter_by(event_id=event.id, quote_currency=currency).one_or_none()

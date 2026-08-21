@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.ledger.overrides import effective_values
+from app.core.settings import get_or_create_settings, is_under_activity_threshold
 from app.db.models import Account, Event, Issue, Override, PriceObservation
 
 from .adapter import CorrectionRow, EventScheduleRow, ReadinessIssue, ReconciliationSummary, TaxReadinessResult, TransferRow
@@ -106,7 +107,13 @@ def load_events_through(session: Session, tax_year: int) -> list[EffectiveEvent]
         .order_by(Event.occurred_at, Event.id)
         .all()
     )
-    return [EffectiveEvent(e, effective_values(session, e)[0]) for e in events]
+    settings = get_or_create_settings(session)
+    included: list[EffectiveEvent] = []
+    for event in events:
+        effective = EffectiveEvent(event, effective_values(session, event)[0])
+        if not is_under_activity_threshold(effective, settings):
+            included.append(effective)
+    return included
 
 
 @dataclass

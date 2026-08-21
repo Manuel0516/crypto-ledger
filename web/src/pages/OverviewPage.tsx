@@ -18,8 +18,7 @@ import { PageError, EmptyState } from "../components/ui/EmptyState";
 import { Skeleton } from "../components/ui/Skeleton";
 import { PortfolioValue } from "../components/domain/PortfolioValue";
 import { deriveLedgerStats } from "../lib/ledgerStats";
-import { HoldingCard } from "../components/domain/HoldingCard";
-import { AccountHoldings } from "../components/domain/AccountHoldings";
+import { HoldingCard, type HoldingSource } from "../components/domain/HoldingCard";
 import { ActivityCard } from "../components/domain/ActivityList";
 import { SourceHealth } from "../components/domain/SourceHealth";
 import { BackupStatus } from "../components/domain/BackupStatus";
@@ -60,6 +59,21 @@ export function OverviewPage({ onOpenEvent, navigate }: OverviewPageProps) {
     [overview],
   );
 
+  // Which linked account(s) each asset actually lives in — folded into
+  // each holding card instead of a separate "balances by source" section.
+  const sourcesByAsset = useMemo(() => {
+    const map = new Map<number, HoldingSource[]>();
+    for (const account of overview?.accounts ?? []) {
+      for (const balance of account.balances) {
+        const list = map.get(balance.id) ?? [];
+        list.push({ accountId: account.id, accountName: account.name, amount: balance.amount, live: Boolean(account.balance_synced_at) });
+        map.set(balance.id, list);
+      }
+    }
+    for (const list of map.values()) list.sort((a, b) => b.amount - a.amount);
+    return map;
+  }, [overview]);
+
   const lastSync = overview?.last_sync ?? null;
   const openIssues = issues?.length ?? overview?.issues ?? 0;
 
@@ -95,26 +109,12 @@ export function OverviewPage({ onOpenEvent, navigate }: OverviewPageProps) {
         />
       )}
 
-      {/* Per-source balances */}
-      {!overviewLoading && (overview?.accounts ?? []).length > 0 && (
-        <section>
-          <SectionHeader
-            eyebrow="Where your assets are"
-            title="Balances by linked source"
-            subtitle="Each address is kept separate, while the portfolio total below combines the same assets across sources"
-          />
-          <div className="mt-3">
-            <AccountHoldings accounts={overview?.accounts ?? []} />
-          </div>
-        </section>
-      )}
-
       {/* Holdings */}
       <section>
         <SectionHeader
           eyebrow="Your holdings"
           title="Assets"
-          subtitle="Net position per asset, valued once at the latest cached price · 24h movement from the ledger"
+          subtitle="Net position per asset, valued once at the latest cached price · 24h movement from the ledger · which linked account it's held in"
         />
         <div className="mt-3">
           {overviewLoading ? (
@@ -141,6 +141,7 @@ export function OverviewPage({ onOpenEvent, navigate }: OverviewPageProps) {
                   asset={asset}
                   allocationPct={allocationOf(asset, holdingsTotal)}
                   flow24h={flowLabel(flows.get(asset.symbol), asset.symbol)}
+                  sources={sourcesByAsset.get(asset.id) ?? []}
                 />
               ))}
             </div>

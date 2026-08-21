@@ -14,6 +14,7 @@ import { MoneyValue } from "./MoneyValue";
 import { EventTypeBadge } from "./EventTypeBadge";
 import { formatDateTime, cx } from "../../lib/format";
 import { ManualEventDialog } from "../../features/activity/ManualEventDialog";
+import { MarketPriceButton } from "./MarketPriceButton";
 
 const FIELD_LABELS: Record<EditableEventField, string> = {
   event_type: "Type",
@@ -270,7 +271,7 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
 
           {/* Valuation provenance + manual price entry */}
           <Section title="Price provenance">
-            <PriceEditor eventId={eventId} valuations={data.valuations} onChange={async () => { await load(); notifyChange(); }} />
+            <PriceEditor eventId={eventId} event={event} valuations={data.valuations} onChange={async () => { await load(); notifyChange(); }} />
           </Section>
 
           <Section title="Linked events">
@@ -584,7 +585,7 @@ function LinksEditor({ eventId, links, onChange }: { eventId: number; links: Eve
   </div>;
 }
 
-function PriceEditor({ eventId, valuations, onChange }: { eventId: number; valuations: EventDetail["valuations"]; onChange: () => Promise<void> }) {
+function PriceEditor({ eventId, event, valuations, onChange }: { eventId: number; event: EventDetail["event"]; valuations: EventDetail["valuations"]; onChange: () => Promise<void> }) {
   const [editingCurrency, setEditingCurrency] = useState<string | null>(null);
   const [unitPrice, setUnitPrice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -638,6 +639,17 @@ function PriceEditor({ eventId, valuations, onChange }: { eventId: number; valua
                     autoFocus
                   />
                 </div>
+                <MarketPriceButton
+                  symbol={event.asset_symbol}
+                  network={event.network}
+                  amount={event.primary_amount}
+                  occurredAt={event.occurred_at}
+                  currencies={[currency]}
+                  label="Use market price at activity time"
+                  onFilled={(prices) => {
+                    if (prices[currency]) setUnitPrice(prices[currency].unit_price);
+                  }}
+                />
                 {error && <p className="text-[11px] text-bad">{error}</p>}
                 <div className="flex gap-2">
                   <Button size="sm" variant="primary" onClick={() => void save(currency)} loading={busy} disabled={!unitPrice}>

@@ -151,6 +151,7 @@ def refresh_valuations(
     for a currency that now resolves are marked resolved."""
     currencies = currencies or valuation_currencies(get_or_create_settings(session))
     amount = amount if amount is not None else Decimal(event.primary_amount)
+    amount = abs(amount)
     occurred_at = occurred_at or event.occurred_at
     asset = event.primary_asset
     if asset.asset_type == "FIAT" or not currencies:

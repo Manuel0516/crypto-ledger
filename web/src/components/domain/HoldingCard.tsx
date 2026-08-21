@@ -1,4 +1,4 @@
-import { TrendingDown, TrendingUp } from "lucide-react";
+import { TrendingDown, TrendingUp, WalletCards } from "lucide-react";
 import type { AssetHolding, PriceHistory } from "../../types";
 import { getJson } from "../../lib/api";
 import { useData } from "../../hooks/useData";
@@ -10,15 +10,25 @@ import { AssetIcon } from "./AssetIcon";
 import { PriceSparkline } from "./PriceSparkline";
 import { cx } from "../../lib/format";
 
+export interface HoldingSource {
+  accountId: number;
+  accountName: string;
+  amount: number;
+  live: boolean;
+}
+
 interface HoldingCardProps {
   asset: AssetHolding;
   allocationPct: number;
   flow24h: string | null;
+  sources: HoldingSource[];
 }
 
-/** Per-asset holding card with allocation bar, 24h net movement, and a live
- * price trend (plan §88). */
-export function HoldingCard({ asset, allocationPct, flow24h }: HoldingCardProps) {
+/** Per-asset holding card with allocation bar, 24h net movement, a live
+ * price trend (plan §88), and the linked accounts it's actually held in —
+ * folding what used to be a separate "balances by source" section into
+ * each asset card instead of a parallel view of the same numbers. */
+export function HoldingCard({ asset, allocationPct, flow24h, sources }: HoldingCardProps) {
   const { data: history } = useData<PriceHistory>(
     () => getJson(`/api/prices/history?asset_id=${asset.id}&currency=${asset.display_currency}&days=7`),
     [asset.id, asset.display_currency],
@@ -74,6 +84,25 @@ export function HoldingCard({ asset, allocationPct, flow24h }: HoldingCardProps)
         </div>
         <p className="mt-1 text-[10px] text-faint">Share of portfolio · latest cached prices</p>
       </div>
+
+      {sources.length > 0 && (
+        <div className="border-t border-line pt-3">
+          <p className="mb-2 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-faint">
+            <WalletCards size={11} /> Held in
+          </p>
+          <div className="space-y-1.5">
+            {sources.map((source) => (
+              <div key={source.accountId} className="flex items-center justify-between gap-2 text-xs">
+                <span className="flex min-w-0 items-center gap-1.5 truncate text-soft">
+                  <span className="truncate">{source.accountName}</span>
+                  {source.live && <span className="size-1.5 shrink-0 rounded-full bg-good" title="Live balance" />}
+                </span>
+                <CryptoAmount amount={source.amount} symbol={asset.symbol} className="shrink-0 text-ink" />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

@@ -167,6 +167,9 @@ interface SourceForm {
   name: string;
   wallet_software: string;
   note: string;
+  initial_symbol: string;
+  initial_network: string;
+  initial_amount: string;
   chain_network: string;
   chain_id: string;
   network_name: string;
@@ -220,6 +223,9 @@ const EMPTY_FORM: SourceForm = {
   name: "",
   wallet_software: "",
   note: "",
+  initial_symbol: "",
+  initial_network: "",
+  initial_amount: "",
   chain_network: "ethereum",
   chain_id: "",
   network_name: "",
@@ -322,6 +328,26 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
       setCreated(true);
       onRefresh();
 
+      if (type === "manual" && (form.initial_symbol.trim() || form.initial_amount.trim())) {
+        try {
+          await postJson("/api/events/manual", {
+            event_type: "MANUAL_ADJUSTMENT",
+            event_subtype: "opening_balance",
+            symbol: form.initial_symbol.trim().toUpperCase(),
+            asset_network: form.initial_network.trim() || null,
+            amount: form.initial_amount.trim(),
+            occurred_at: new Date().toISOString(),
+            account_id: createdAccount.id,
+            source_label: form.name,
+            description: "Opening balance",
+            notes: "Initial balance entered when this manual account was linked.",
+          });
+        } catch (reason) {
+          setWarning(`Account saved, but the opening balance could not be recorded: ${reason instanceof Error ? reason.message : "unknown error"}. You can add it later from Activity.`);
+          return;
+        }
+      }
+
       // Live sources get an immediate deeper pull so history shows up right
       // away, instead of waiting for the next scheduled check. This can
       // fail (bad credentials, a source-side rate limit, network trouble) —
@@ -350,7 +376,7 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
   const canSave =
     form.name.trim().length > 0 &&
     (type === "manual"
-      ? true
+      ? (!form.initial_symbol.trim() && !form.initial_amount.trim()) || (form.initial_symbol.trim().length > 0 && form.initial_amount.trim().length > 0)
       : type === "exchange_import"
         ? isLiveExchange
           ? form.api_key.trim().length > 0 &&
@@ -421,6 +447,26 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
                 placeholder={placeholderName(type)}
               />
             </Field>
+
+            {type === "manual" && (
+              <div className="sm:col-span-2 rounded-lg border border-line bg-base/40 p-3.5">
+                <p className="text-sm font-semibold text-ink">Optional opening balance</p>
+                <p className="mt-0.5 text-[11px] text-soft">
+                  Add what this account already held. It becomes a ledger event, so future transactions linked to this account update the balance correctly.
+                </p>
+                <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                  <Field label="Asset symbol" htmlFor="acc-initial-symbol">
+                    <Input id="acc-initial-symbol" value={form.initial_symbol} onChange={(e) => change("initial_symbol", e.target.value.toUpperCase())} placeholder="XMR" />
+                  </Field>
+                  <Field label="Initial amount" htmlFor="acc-initial-amount" hint="Enter a positive amount">
+                    <Input id="acc-initial-amount" value={form.initial_amount} onChange={(e) => change("initial_amount", e.target.value)} placeholder="10.5" inputMode="decimal" />
+                  </Field>
+                  <Field label="Network (optional)" htmlFor="acc-initial-network" className="sm:col-span-2" hint="Useful for tokens or assets sharing a symbol">
+                    <Input id="acc-initial-network" value={form.initial_network} onChange={(e) => change("initial_network", e.target.value)} placeholder="Monero, Ethereum…" />
+                  </Field>
+                </div>
+              </div>
+            )}
 
             {type === "exchange_import" && (
               <div className="sm:col-span-2 space-y-4">

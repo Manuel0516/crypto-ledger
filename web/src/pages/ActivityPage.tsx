@@ -34,6 +34,7 @@ export function ActivityPage({ onOpenEvent }: ActivityPageProps) {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
+  const [underThreshold, setUnderThreshold] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
 
@@ -50,8 +51,9 @@ export function ActivityPage({ onOpenEvent }: ActivityPageProps) {
     if (resolution !== ALL) params.set("resolved", resolution === "resolved" ? "true" : "false");
     if (dateFrom) params.set("date_from", `${dateFrom}T00:00:00Z`);
     if (dateTo) params.set("date_to", `${dateTo}T23:59:59Z`);
+    if (underThreshold) params.set("under_threshold", "true");
     return `/api/events?${params.toString()}`;
-  }, [page, query, type, asset, network, source, accountId, provenance, scope, resolution, dateFrom, dateTo]);
+  }, [page, query, type, asset, network, source, accountId, provenance, scope, resolution, dateFrom, dateTo, underThreshold]);
   const { data, loading, error, refresh } = useData<EventListResponse>(() => getJson(requestUrl), [requestUrl]);
   const events = data?.items ?? [];
 
@@ -98,9 +100,14 @@ export function ActivityPage({ onOpenEvent }: ActivityPageProps) {
         </div></Card>
       )}
 
-      <p className="text-xs text-faint">{data?.total ?? 0} event{data?.total === 1 ? "" : "s"}{anyFilterActive && " · filtered"}</p>
+      <div className="flex gap-1 border-b border-line" role="tablist" aria-label="Activity views">
+        <button type="button" role="tab" aria-selected={!underThreshold} onClick={() => { setUnderThreshold(false); resetPagination(); }} className={cx("border-b-2 px-1 pb-2 text-sm font-semibold transition-colors", !underThreshold ? "border-accent text-ink" : "border-transparent text-soft hover:text-ink")}>Activity</button>
+        <button type="button" role="tab" aria-selected={underThreshold} onClick={() => { setUnderThreshold(true); resetPagination(); }} className={cx("border-b-2 px-1 pb-2 text-sm font-semibold transition-colors", underThreshold ? "border-accent text-ink" : "border-transparent text-soft hover:text-ink")}>Activity under threshold</button>
+      </div>
+
+      <p className="text-xs text-faint">{data?.total ?? 0} event{data?.total === 1 ? "" : "s"}{underThreshold ? " · excluded by threshold" : anyFilterActive ? " · filtered" : ""}</p>
       {error ? <PageError message={error} /> : loading ? <Card><div className="p-4"><Skeleton className="h-64" /></div></Card> : events.length === 0 ? (
-        <Card><EmptyState icon={<Search size={22} />} title={data?.total ? "No matching events" : "No events yet"} text={data?.total ? "Try a different search or clear the filters." : "Synchronize a source or add a manual event to start the ledger."} action={!data?.total ? <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => setShowManual(true)}>Add first event</Button> : undefined} /></Card>
+        <Card><EmptyState icon={<Search size={22} />} title={data?.total ? "No matching events" : underThreshold ? "No activity under threshold" : "No events yet"} text={data?.total ? "Try a different search or clear the filters." : underThreshold ? "Lower the configured threshold to include more activity in the main view and reports." : "Synchronize a source or add a manual event to start the ledger."} action={!data?.total && !underThreshold ? <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => setShowManual(true)}>Add first event</Button> : undefined} /></Card>
       ) : (
         <Card className="!p-0 overflow-hidden"><div className="hidden md:block"><ActivityTableHeader />{events.map((event) => <ActivityRow key={event.id} event={event} onOpen={onOpenEvent} />)}</div><div className="divide-y divide-line md:hidden">{events.map((event) => <ActivityCard key={event.id} event={event} onOpen={onOpenEvent} />)}</div></Card>
       )}

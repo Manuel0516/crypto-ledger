@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Upload } from "lucide-react";
 import type { Account, EventDetail, ManualEventInput } from "../../types";
 import { EVENT_TYPES } from "../../types";
@@ -7,6 +7,7 @@ import { useData } from "../../hooks/useData";
 import { Dialog } from "../../components/ui/Dialog";
 import { Button } from "../../components/ui/Button";
 import { Field, Input, Select, Textarea } from "../../components/ui/Field";
+import { MarketPriceButton } from "../../components/domain/MarketPriceButton";
 
 const EVENT_CHOICES = Object.keys(EVENT_TYPES);
 
@@ -25,13 +26,13 @@ const TYPE_FIELDS: Record<string, FieldGroup[]> = {
   SELL: ["fee", "fiatValue", "evidence"],
   SWAP: ["secondaryAsset", "fee", "fiatValue", "evidence"],
   DEPOSIT: ["addressFrom", "counterparty", "evidence"],
-  WITHDRAWAL: ["destination", "addressTo", "counterparty", "fee", "evidence"],
+  WITHDRAWAL: ["destination", "addressFrom", "addressTo", "counterparty", "fee", "evidence"],
   TRANSFER: ["destination", "addressFrom", "addressTo", "counterparty", "fee", "evidence"],
-  SEND: ["destination", "addressTo", "counterparty", "fee", "evidence"],
-  RECEIVE: ["addressFrom", "counterparty", "evidence"],
-  PAYMENT: ["destination", "addressTo", "counterparty", "fee", "evidence"],
-  GIFT_SENT: ["destination", "addressTo", "counterparty"],
-  GIFT_RECEIVED: ["addressFrom", "counterparty"],
+  SEND: ["destination", "addressFrom", "addressTo", "counterparty", "fee", "evidence"],
+  RECEIVE: ["addressFrom", "addressTo", "counterparty", "evidence"],
+  PAYMENT: ["destination", "addressFrom", "addressTo", "counterparty", "fee", "evidence"],
+  GIFT_SENT: ["destination", "addressFrom", "addressTo", "counterparty"],
+  GIFT_RECEIVED: ["addressFrom", "addressTo", "counterparty"],
   INCOME: ["counterparty", "fiatValue", "evidence"],
   STAKING_REWARD: ["counterparty", "fiatValue"],
   AIRDROP: ["counterparty", "fiatValue"],
@@ -153,7 +154,29 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
   // In edit mode show every field so an existing record can be corrected in
   // one complete form, even if the original type would normally hide it.
   const has = (g: FieldGroup) => Boolean(editEvent) || groups.includes(g);
-  const amountLabel = AMOUNT_LABELS[form.event_type] ?? "Amount";
+  // When a second asset leg is visible, the primary leg is the asset given
+  // and the secondary leg is the asset received. This also keeps edit mode
+  // clear when an imported record has a secondary leg but its event type
+  // would otherwise use the generic "Amount received" label.
+  const amountLabel = has("secondaryAsset") ? "Amount given" : (AMOUNT_LABELS[form.event_type] ?? "Amount");
+  const destinationAccount = accounts?.find((account) => account.name === form.destination_label);
+  const destinationChoice = destinationAccount ? String(destinationAccount.id) : "external";
+  const counterpartyAccount = accounts?.find((account) => account.name === form.counterparty);
+  const counterpartyChoice = counterpartyAccount ? String(counterpartyAccount.id) : "external";
+
+  useEffect(() => {
+    if (!accounts?.length) return;
+    const selectedAccount = accounts.find((account) => account.id === form.account_id);
+    const outgoing = new Set(["WITHDRAWAL", "TRANSFER", "SEND", "PAYMENT", "GIFT_SENT"]).has(form.event_type);
+    const nextAddressFrom = outgoing ? selectedAccount?.address : counterpartyAccount?.address;
+    const nextAddressTo = outgoing ? destinationAccount?.address : selectedAccount?.address;
+    if (!nextAddressFrom && !nextAddressTo) return;
+    setForm((current) => ({
+      ...current,
+      address_from: current.address_from || nextAddressFrom || "",
+      address_to: current.address_to || nextAddressTo || "",
+    }));
+  }, [accounts, counterpartyAccount, destinationAccount, form.account_id, form.event_type]);
 
   const change = <K extends keyof ManualEventInput>(field: K, value: ManualEventInput[K]) =>
     setForm((current) => ({ ...current, [field]: value }));
@@ -270,7 +293,37 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
     const id = raw ? Number(raw) : null;
     change("account_id", id);
     const account = accounts?.find((a) => a.id === id);
-    if (account) change("source_label", account.name);
+    if (account) {
+      change("source_label", account.name);
+      if (account.address) {
+        const outgoing = new Set(["WITHDRAWAL", "TRANSFER", "SEND", "PAYMENT", "GIFT_SENT"]).has(form.event_type);
+        change(outgoing ? "address_from" : "address_to", account.address);
+      }
+    }
+  };
+
+  const onDestinationChange = (raw: string) => {
+    if (raw === "external") {
+      change("destination_label", "");
+      return;
+    }
+    const account = accounts?.find((item) => item.id === Number(raw));
+    if (account) {
+      change("destination_label", account.name);
+      if (account.address) change("address_to", account.address);
+    }
+  };
+
+  const onCounterpartyChange = (raw: string) => {
+    if (raw === "external") {
+      change("counterparty", "");
+      return;
+    }
+    const account = accounts?.find((item) => item.id === Number(raw));
+    if (account) {
+      change("counterparty", account.name);
+      if (account.address && has("addressFrom")) change("address_from", account.address);
+    }
   };
 
   return (
@@ -306,8 +359,8 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
         <FormSection title="Ownership & counterparties" description="Which of your accounts and which other party were involved.">
           <Field label="Account / source" htmlFor="manual-account" hint="Optional — links this event to a linked source"><Select id="manual-account" value={form.account_id ?? ""} onChange={(e) => onAccountChange(e.target.value)}><option value="">Custom label…</option>{(accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</Select></Field>
           <Field label="Source label" htmlFor="manual-source"><Input id="manual-source" value={form.source_label} onChange={(e) => change("source_label", e.target.value)} placeholder="Manual" disabled={form.account_id != null} /></Field>
-          {has("destination") && <Field label="Destination" htmlFor="manual-destination"><Input id="manual-destination" value={form.destination_label ?? ""} onChange={(e) => change("destination_label", e.target.value)} placeholder="Optional" /></Field>}
-          {has("counterparty") && <Field label="Counterparty" htmlFor="manual-counterparty"><Input id="manual-counterparty" value={form.counterparty ?? ""} onChange={(e) => change("counterparty", e.target.value)} placeholder="Optional" /></Field>}
+          {has("destination") && <><Field label="Destination source" htmlFor="manual-destination-source" hint="Choose a registered source or enter an external destination"><Select id="manual-destination-source" value={destinationChoice} onChange={(e) => onDestinationChange(e.target.value)}><option value="external">External source…</option>{(accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</Select></Field>{destinationChoice === "external" && <Field label="External destination" htmlFor="manual-destination"><Input id="manual-destination" value={form.destination_label ?? ""} onChange={(e) => change("destination_label", e.target.value)} placeholder="Exchange, wallet, person…" /></Field>}</>}
+          {has("counterparty") && <><Field label="Other source" htmlFor="manual-counterparty-source" hint="Choose a registered source or enter an external party"><Select id="manual-counterparty-source" value={counterpartyChoice} onChange={(e) => onCounterpartyChange(e.target.value)}><option value="external">External source…</option>{(accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</Select></Field>{counterpartyChoice === "external" && <Field label="External source / counterparty" htmlFor="manual-counterparty"><Input id="manual-counterparty" value={form.counterparty ?? ""} onChange={(e) => change("counterparty", e.target.value)} placeholder="Exchange, wallet, person…" /></Field>}</>}
           <Field label="Merchant" htmlFor="manual-merchant"><Input id="manual-merchant" value={form.merchant ?? ""} onChange={(e) => change("merchant", e.target.value)} placeholder="Optional" /></Field>
         </FormSection>
 
@@ -318,7 +371,24 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
         </FormSection>}
 
         {(has("fiatValue") || has("fee")) && <FormSection title="Values & fees" description="Optional values and costs used for pricing and reporting.">
-          {has("fiatValue") && <><Field label="EUR value" htmlFor="manual-eur" hint="Leave blank to price automatically"><Input id="manual-eur" value={form.eur_value ?? ""} onChange={(e) => change("eur_value", e.target.value)} placeholder="Optional" inputMode="decimal" /></Field><Field label="SEK value" htmlFor="manual-sek" hint="Leave blank to price automatically"><Input id="manual-sek" value={form.sek_value ?? ""} onChange={(e) => change("sek_value", e.target.value)} placeholder="Optional" inputMode="decimal" /></Field></>}
+          {has("fiatValue") && <>
+            <Field label="EUR value" htmlFor="manual-eur" hint="Leave blank to price automatically"><Input id="manual-eur" value={form.eur_value ?? ""} onChange={(e) => change("eur_value", e.target.value)} placeholder="Optional" inputMode="decimal" /></Field>
+            <Field label="SEK value" htmlFor="manual-sek" hint="Leave blank to price automatically"><Input id="manual-sek" value={form.sek_value ?? ""} onChange={(e) => change("sek_value", e.target.value)} placeholder="Optional" inputMode="decimal" /></Field>
+            <div className="sm:col-span-2">
+              <MarketPriceButton
+                symbol={form.symbol}
+                network={form.asset_network}
+                amount={form.amount}
+                occurredAt={form.occurred_at}
+                currencies={["EUR", "SEK"]}
+                label="Fill EUR & SEK from market price"
+                onFilled={(prices) => {
+                  if (prices.EUR) change("eur_value", prices.EUR.total_value);
+                  if (prices.SEK) change("sek_value", prices.SEK.total_value);
+                }}
+              />
+            </div>
+          </>}
           {has("fee") && <><Field label="Fee type" htmlFor="manual-fee-type"><Select id="manual-fee-type" value={form.fee_type} onChange={(e) => change("fee_type", e.target.value)}>{FEE_TYPES.map((feeType) => <option key={feeType} value={feeType}>{feeType.split("_").join(" ")}</option>)}</Select></Field><Field label="Fee asset" htmlFor="manual-fee-asset"><Input id="manual-fee-asset" value={form.fee_asset ?? ""} onChange={(e) => change("fee_asset", e.target.value.toUpperCase())} placeholder="Optional" /></Field><Field label="Fee amount" htmlFor="manual-fee-amount"><Input id="manual-fee-amount" value={form.fee_amount ?? ""} onChange={(e) => change("fee_amount", e.target.value)} placeholder="Optional" inputMode="decimal" /></Field></>}
         </FormSection>}
 

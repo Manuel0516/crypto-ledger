@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.api.overview import overview
 from app.api.events import list_events
 from app.core.settings import get_or_create_settings
+from app.core.tax.common import load_events_through
 from app.db.models import Account, AccountBalance, Asset, Base, Event, Valuation
 
 OCCURRED_AT = datetime(2026, 8, 20, tzinfo=timezone.utc)
@@ -239,6 +240,51 @@ class OverviewTests(unittest.TestCase):
 
         self.assertEqual(result["total"], 2)
         self.assertEqual({item["id"] for item in result["items"]}, {2, 3})
+
+        under_threshold = list_events(session=self.session, limit=50, under_threshold=True)
+        self.assertEqual(under_threshold["total"], 1)
+        self.assertEqual({item["id"] for item in under_threshold["items"]}, {1})
+
+        report_events = load_events_through(self.session, OCCURRED_AT.year)
+        self.assertEqual({event.id for event in report_events}, {2, 3})
+
+    def test_overview_excludes_holdings_created_only_by_under_threshold_events(self) -> None:
+        asset = Asset(symbol="BTC", name="Bitcoin", asset_type="COIN")
+        self.session.add(asset)
+        self.session.flush()
+        event = Event(
+            external_id="tiny-overview",
+            event_type="RECEIVE",
+            direction="+",
+            status="COMPLETE",
+            occurred_at=OCCURRED_AT,
+            primary_asset_id=asset.id,
+            primary_amount="0.001",
+            source_label="Test",
+            provenance="manual",
+            normalizer_version="test",
+        )
+        self.session.add(event)
+        self.session.flush()
+        self.session.add(
+            Valuation(
+                event_id=event.id,
+                quote_currency="EUR",
+                unit_price="40",
+                total_value="0.04",
+                requested_timestamp=OCCURRED_AT,
+                observation_timestamp=OCCURRED_AT,
+                provider="test",
+                provider_asset_id="btc",
+                method="MANUAL",
+            )
+        )
+        self.session.commit()
+
+        result = overview(self.session)
+
+        self.assertEqual(result["assets"], [])
+        self.assertEqual(result["portfolio_eur"], 0.0)
 
 
 if __name__ == "__main__":

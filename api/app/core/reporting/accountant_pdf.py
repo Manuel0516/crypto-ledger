@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.settings import get_or_create_settings, is_under_activity_threshold
 from app.db.models import Account, Event, EventLink, Override
 
 from .i18n import DEFAULT_LANGUAGE, t
@@ -25,12 +26,21 @@ def render_accountant_pdf(session: Session, language: str = DEFAULT_LANGUAGE) ->
 
     events = (
         session.query(Event)
-        .options(selectinload(Event.primary_asset), selectinload(Event.secondary_asset))
+        .options(selectinload(Event.primary_asset), selectinload(Event.secondary_asset), selectinload(Event.valuations))
         .order_by(Event.occurred_at.desc())
         .all()
     )
+    settings = get_or_create_settings(session)
+    events = [event for event in events if not is_under_activity_threshold(event, settings)]
+    visible_event_ids = {event.id for event in events}
     accounts = session.query(Account).order_by(Account.name).all()
-    overrides = session.query(Override).order_by(Override.changed_at.desc()).limit(_CORRECTIONS_LIMIT).all()
+    overrides = (
+        session.query(Override)
+        .filter(Override.event_id.in_(visible_event_ids) if visible_event_ids else Override.event_id == -1)
+        .order_by(Override.changed_at.desc())
+        .limit(_CORRECTIONS_LIMIT)
+        .all()
+    )
     links = (
         session.query(EventLink)
         .filter(EventLink.relationship_type == "INTERNAL_TRANSFER")
@@ -38,6 +48,7 @@ def render_accountant_pdf(session: Session, language: str = DEFAULT_LANGUAGE) ->
         .order_by(EventLink.created_at.desc())
         .all()
     )
+    links = [link for link in links if link.event_id in visible_event_ids and link.linked_event_id in visible_event_ids]
 
     pdf = _ReportPDF()
     pdf.disclaimer_text = tr("accountant_disclaimer")
