@@ -47,6 +47,63 @@ def store_raw(session: Session, raw: RawRecord, connector_version: str) -> RawEv
     return record
 
 
+def _refresh_existing_automatic_event(session: Session, raw: RawRecord, connector: Connector) -> None:
+    """Apply newly available source evidence to an existing automatic event.
+
+    Connector improvements must be able to enrich a previously imported
+    event on the next backfill without creating a duplicate transaction. The
+    base event values are only filled when they were previously absent; any
+    user override remains untouched. Raw evidence is replaced only when the
+    connector supplied a different payload, and remains the source payload,
+    not a hand-edited interpretation.
+    """
+    existing_raw = (
+        session.query(RawEvent)
+        .filter_by(source_id=raw.source_id, external_id=raw.external_id)
+        .one_or_none()
+    )
+    if existing_raw is None:
+        return
+    new_payload_json = json.dumps(raw.payload, sort_keys=True, default=str)
+    new_hash = _hash_payload(raw.payload)
+    if existing_raw.payload_hash == new_hash:
+        return
+    event = session.query(Event).filter(Event.raw_event_id == existing_raw.id).one_or_none()
+    if event is None or event.provenance != "automatic":
+        return
+
+    normalized = connector.normalize(raw)
+    for field in (
+        "address_from",
+        "address_to",
+        "tx_hash",
+        "block_height",
+        "block_hash",
+        "log_index",
+        "contract_address",
+    ):
+        if getattr(event, field) in (None, "") and getattr(normalized, field) not in (None, ""):
+            setattr(event, field, getattr(normalized, field))
+    if not event.fees and normalized.fees:
+        for fee in normalized.fees:
+            fee_asset = get_or_create_asset(session, fee.asset_symbol)
+            session.add(
+                Fee(
+                    event_id=event.id,
+                    fee_type=fee.fee_type,
+                    fee_asset_id=fee_asset.id,
+                    fee_amount=fee.amount,
+                    fee_recipient=fee.fee_recipient,
+                )
+            )
+    existing_raw.payload_json = new_payload_json
+    existing_raw.payload_hash = new_hash
+    existing_raw.connector_version = connector.version
+    existing_raw.source_timestamp = raw.source_timestamp
+    existing_raw.source_timezone = raw.source_timezone
+    event.normalizer_version = connector.version
+
+
 def ingest(
     session: Session,
     connector: Connector,
@@ -59,6 +116,7 @@ def ingest(
     Returns None if this record was already ingested (idempotent no-op)."""
     raw_row = store_raw(session, raw, connector.version)
     if raw_row is None:
+        _refresh_existing_automatic_event(session, raw, connector)
         return None
 
     normalized = connector.normalize(raw)

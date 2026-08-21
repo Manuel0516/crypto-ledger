@@ -90,7 +90,7 @@ The current connector surface includes:
 
 Connector availability depends on credentials, network access, rate limits, and account permissions. Never provide a seed phrase or private key to a connector; the linked-account UI is designed around public addresses and read-only exchange access where possible.
 
-EVM sources keep the selected network separate from the address. Empty explorer responses such as “No token transfers found” are treated as a successful empty history. Avalanche uses Routescan’s indexed API. BNB Smart Chain is not indexed by Routescan, so it uses Etherscan V2 and requires an Etherscan API key, which is encrypted with the source configuration. Other EVM networks can be added with their chain ID and an Etherscan-compatible explorer endpoint.
+EVM sources keep the selected network separate from the address. Empty explorer responses such as “No token transfers found” are treated as a successful empty history. Avalanche uses Routescan’s indexed API. For BNB Smart Chain, add an optional BSCTrace/MegaNode API key in the linked source to use indexed native BNB, internal, BEP-20, ERC-721/1155, and contract-call history plus current token holdings. Without a key, the app keeps a keyless public-RPC fallback for native balance and the default USDC/WBNB transfer logs, with the fallback’s coverage limits shown after sync. Existing Etherscan-compatible BSC configurations remain supported. Other EVM networks can be added with their chain ID and an Etherscan-compatible explorer endpoint.
 
 ### Exchange history windows
 

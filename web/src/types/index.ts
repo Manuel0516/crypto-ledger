@@ -113,6 +113,13 @@ export interface EventEvidence {
   trade_id: string | null;
   deposit_id: string | null;
   withdrawal_id: string | null;
+  transaction_fee_amount: string | null;
+  transaction_fee_asset: string | null;
+  gas_used: string | null;
+  gas_price: string | null;
+  transaction_input: string | null;
+  transaction_nonce: number | string | null;
+  transaction_index: number | string | null;
 }
 
 export interface Valuation {

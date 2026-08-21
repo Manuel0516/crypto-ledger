@@ -292,6 +292,20 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
                 {data.evidence.trade_id && <DetailRow label="Trade ID" value={<span className="font-mono text-[11px]">{data.evidence.trade_id}</span>} copyText={data.evidence.trade_id} wide />}
                 {data.evidence.deposit_id && <DetailRow label="Deposit ID" value={<span className="font-mono text-[11px]">{data.evidence.deposit_id}</span>} copyText={data.evidence.deposit_id} wide />}
                 {data.evidence.withdrawal_id && <DetailRow label="Withdrawal ID" value={<span className="font-mono text-[11px]">{data.evidence.withdrawal_id}</span>} copyText={data.evidence.withdrawal_id} wide />}
+                {data.evidence.transaction_fee_amount && (
+                  <DetailRow
+                    label="Transaction fee"
+                    value={`${data.evidence.transaction_fee_amount} ${data.evidence.transaction_fee_asset || "BNB"}`}
+                    copyText={`${data.evidence.transaction_fee_amount} ${data.evidence.transaction_fee_asset || "BNB"}`}
+                  />
+                )}
+                {data.evidence.gas_used && <DetailRow label="Gas used" value={data.evidence.gas_used} copyText={data.evidence.gas_used} />}
+                {data.evidence.gas_price && <DetailRow label="Gas price" value={`${data.evidence.gas_price} wei`} copyText={data.evidence.gas_price} />}
+                {data.evidence.transaction_nonce !== null && <DetailRow label="Nonce" value={data.evidence.transaction_nonce} />}
+                {data.evidence.transaction_index !== null && <DetailRow label="Transaction index" value={data.evidence.transaction_index} />}
+                {data.evidence.transaction_input && data.evidence.transaction_input !== "0x" && (
+                  <DetailRow label="Input data" value={<span className="break-all font-mono text-[11px]">{data.evidence.transaction_input}</span>} copyText={data.evidence.transaction_input} wide />
+                )}
               </dl>
             </Section>
           )}
@@ -321,7 +335,6 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
                 <Button size="sm" variant="danger" onClick={() => void deleteEvent()} icon={<Trash2 size={14} />} loading={deleting}>Delete activity</Button>
               </div>
             </div>
-            <p className="mt-3 text-[11px] text-bad">Permanent deletion removes this event and its stored evidence.</p>
           </div>
 
           {data.overrides.length > 0 && (

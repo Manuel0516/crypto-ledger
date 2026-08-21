@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session, selectinload
 
@@ -128,15 +128,36 @@ def _linked_ids(event: EffectiveEvent) -> list[int]:
     return ids
 
 
+def _is_self_canceling_relocation(event: EffectiveEvent) -> bool:
+    """An event whose own secondary leg exactly cancels its primary leg —
+    same asset, same amount (secondary_amount's documented convention gives
+    it the opposite direction implicitly). This is how a single-exchange
+    internal wallet shuffle is recorded (e.g. Bitget's UTA/margin internal
+    transfers: spot <-> futures <-> margin, all one account) — there is no
+    second event to link to, because the "other side" is the same account,
+    same asset. The amount was never at risk of being counted as a real
+    disposal or acquisition, so unlike a genuine DEPOSIT/WITHDRAWAL this
+    doesn't need a human to confirm it isn't taxable."""
+    if event.secondary_asset_id is None or event.secondary_asset_id != event.primary_asset_id:
+        return False
+    try:
+        return Decimal(event.secondary_amount or "0") == Decimal(event.primary_amount)
+    except InvalidOperation:
+        return False
+
+
 def classify_moves(events: list[EffectiveEvent]) -> tuple[list[TransferPair], list[EffectiveEvent]]:
     """Splits same-asset move events (WITHDRAWAL/DEPOSIT/TRANSFER/SEND/
     RECEIVE/BRIDGE_OUT/BRIDGE_IN) into confirmed internal-transfer pairs
     (linked via the INTERNAL_TRANSFER relationship, matched by direction
     rather than exact type name) and ambiguous events with no such link.
     Ambiguous events are never guessed at — they block report generation
-    instead (plan §95)."""
+    instead (plan §95). A self-canceling relocation (see
+    _is_self_canceling_relocation) is excluded before either bucket: it's
+    provably non-taxable on its own, so it never needs linking or manual
+    resolution in the first place."""
     by_id = {e.id: e for e in events}
-    moves = [e for e in events if e.event_type in _MOVE_TYPES]
+    moves = [e for e in events if e.event_type in _MOVE_TYPES and not _is_self_canceling_relocation(e)]
     paired_ids: set[int] = set()
     pairs: list[TransferPair] = []
     for event in moves:

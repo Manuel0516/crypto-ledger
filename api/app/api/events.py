@@ -107,6 +107,55 @@ def _event_tags(tags_json: str | None) -> list[str]:
     return [str(tag) for tag in tags] if isinstance(tags, list) else []
 
 
+def _transaction_evidence(event: Event, values: dict[str, str | None]) -> dict:
+    """Expose provider transaction metadata without turning sender fees into
+    wallet debits on an incoming transfer.
+
+    EVM connectors retain the original gas fields in raw evidence. Newer BSC
+    records also carry MegaNode's transaction-detail response. The structured
+    fee below is informational for the transaction; ledger fees remain the
+    separately stored fees attached only when this account paid them.
+    """
+    empty = {
+        "transaction_fee_amount": None,
+        "transaction_fee_asset": None,
+        "gas_used": None,
+        "gas_price": None,
+        "transaction_input": None,
+        "transaction_nonce": None,
+        "transaction_index": None,
+    }
+    if not event.raw_event or not values.get("tx_hash"):
+        return empty
+    try:
+        payload = json.loads(event.raw_event.payload_json)
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        return empty
+    gas_used = payload.get("gasUsed")
+    gas_price = payload.get("gasPrice")
+    fee_wei = payload.get("_transaction_fee_wei")
+    try:
+        if fee_wei in (None, "") and gas_used not in (None, "") and gas_price not in (None, ""):
+            fee_wei = Decimal(str(gas_used)) * Decimal(str(gas_price))
+        fee_amount = format(Decimal(str(fee_wei)) / Decimal(10**18), "f") if fee_wei not in (None, "") else None
+    except (InvalidOperation, TypeError, ValueError):
+        fee_amount = None
+    native_symbol = payload.get("_native_symbol")
+    if not native_symbol and payload.get("_network") == "BNB Smart Chain":
+        native_symbol = "BNB"
+    return {
+        "transaction_fee_amount": fee_amount,
+        "transaction_fee_asset": native_symbol,
+        "gas_used": str(gas_used) if gas_used not in (None, "") else None,
+        "gas_price": str(gas_price) if gas_price not in (None, "") else None,
+        "transaction_input": payload.get("input") or None,
+        "transaction_nonce": payload.get("nonce"),
+        "transaction_index": payload.get("transactionIndex"),
+    }
+
+
 def _event_options():
     return (
         selectinload(Event.primary_asset),
@@ -290,6 +339,7 @@ def get_event(event_id: int, session: Session = Depends(get_session)):
             "trade_id": values["trade_id"],
             "deposit_id": values["deposit_id"],
             "withdrawal_id": values["withdrawal_id"],
+            **_transaction_evidence(event, values),
         },
         "overrides": [
             {"field": o.field, "old_value": o.old_value, "new_value": o.new_value, "changed_at": o.changed_at.isoformat(), "reason": o.reason}

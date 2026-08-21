@@ -178,6 +178,14 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
     }));
   }, [accounts, counterpartyAccount, destinationAccount, form.account_id, form.event_type]);
 
+  useEffect(() => {
+    // A destination and a counterparty are alternative ways to describe the
+    // other side of an outgoing activity. Do not keep both in the form state
+    // when an existing record already contains both values.
+    if (!groups.includes("destination") || !form.destination_label?.trim() || !form.counterparty) return;
+    setForm((current) => ({ ...current, counterparty: "" }));
+  }, [form.counterparty, form.destination_label, groups]);
+
   const change = <K extends keyof ManualEventInput>(field: K, value: ManualEventInput[K]) =>
     setForm((current) => ({ ...current, [field]: value }));
 
@@ -305,12 +313,14 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
   const onDestinationChange = (raw: string) => {
     if (raw === "external") {
       change("destination_label", "");
+      change("address_to", "");
       return;
     }
     const account = accounts?.find((item) => item.id === Number(raw));
     if (account) {
       change("destination_label", account.name);
-      if (account.address) change("address_to", account.address);
+      change("counterparty", "");
+      change("address_to", account.address ?? "");
     }
   };
 
@@ -359,8 +369,8 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
         <FormSection title="Ownership & counterparties" description="Which of your accounts and which other party were involved.">
           <Field label="Account / source" htmlFor="manual-account" hint="Optional — links this event to a linked source"><Select id="manual-account" value={form.account_id ?? ""} onChange={(e) => onAccountChange(e.target.value)}><option value="">Custom label…</option>{(accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</Select></Field>
           <Field label="Source label" htmlFor="manual-source"><Input id="manual-source" value={form.source_label} onChange={(e) => change("source_label", e.target.value)} placeholder="Manual" disabled={form.account_id != null} /></Field>
-          {has("destination") && <><Field label="Destination source" htmlFor="manual-destination-source" hint="Choose a registered source or enter an external destination"><Select id="manual-destination-source" value={destinationChoice} onChange={(e) => onDestinationChange(e.target.value)}><option value="external">External source…</option>{(accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</Select></Field>{destinationChoice === "external" && <Field label="External destination" htmlFor="manual-destination"><Input id="manual-destination" value={form.destination_label ?? ""} onChange={(e) => change("destination_label", e.target.value)} placeholder="Exchange, wallet, person…" /></Field>}</>}
-          {has("counterparty") && <><Field label="Other source" htmlFor="manual-counterparty-source" hint="Choose a registered source or enter an external party"><Select id="manual-counterparty-source" value={counterpartyChoice} onChange={(e) => onCounterpartyChange(e.target.value)}><option value="external">External source…</option>{(accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</Select></Field>{counterpartyChoice === "external" && <Field label="External source / counterparty" htmlFor="manual-counterparty"><Input id="manual-counterparty" value={form.counterparty ?? ""} onChange={(e) => change("counterparty", e.target.value)} placeholder="Exchange, wallet, person…" /></Field>}</>}
+          {has("destination") && <><Field label="Destination source" htmlFor="manual-destination-source" hint="Choose a linked account or enter an external destination"><Select id="manual-destination-source" value={destinationChoice} onChange={(e) => onDestinationChange(e.target.value)}><option value="external">External destination…</option>{(accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</Select></Field>{destinationChoice === "external" && <Field label="External destination" htmlFor="manual-destination"><Input id="manual-destination" value={form.destination_label ?? ""} onChange={(e) => change("destination_label", e.target.value)} placeholder="Exchange, wallet, person…" /></Field>}</>}
+          {has("counterparty") && (!has("destination") || !form.destination_label?.trim()) && <><Field label="Other source" htmlFor="manual-counterparty-source" hint="Choose a registered source or enter an external party"><Select id="manual-counterparty-source" value={counterpartyChoice} onChange={(e) => onCounterpartyChange(e.target.value)}><option value="external">External source…</option>{(accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</Select></Field>{counterpartyChoice === "external" && <Field label="External source / counterparty" htmlFor="manual-counterparty"><Input id="manual-counterparty" value={form.counterparty ?? ""} onChange={(e) => change("counterparty", e.target.value)} placeholder="Exchange, wallet, person…" /></Field>}</>}
           <Field label="Merchant" htmlFor="manual-merchant"><Input id="manual-merchant" value={form.merchant ?? ""} onChange={(e) => change("merchant", e.target.value)} placeholder="Optional" /></Field>
         </FormSection>
 

@@ -314,6 +314,33 @@ class EVMConnectorTests(unittest.TestCase):
         self.assertFalse(self.connector._bsc_public_rpc_mode())
         self.assertIsNone(self.connector.history_limit_note)
 
+    def test_bsc_trace_key_uses_indexed_history_instead_of_etherscan(self) -> None:
+        connector = EVMAddressConnector(ADDRESS, "BSC wallet", chain="bsc", config={"bsc_trace_api_key": "trace-key"})
+        transfer = {
+            "_kind": "native",
+            "hash": "0xtrace",
+            "from": OTHER_ADDRESS,
+            "to": ADDRESS,
+            "value": "1000000000000000000",
+            "timeStamp": str(int(OCCURRED_AT.timestamp())),
+            "blockNumber": "12",
+        }
+        with (
+            patch("app.connectors.evm.connector.bsctrace.fetch_transfers", return_value=iter([transfer])) as fetch,
+            patch("app.connectors.evm.connector.httpx.get") as explorer_get,
+        ):
+            records = list(connector.fetch(since=OCCURRED_AT))
+        fetch.assert_called_once_with(ADDRESS, "trace-key", OCCURRED_AT)
+        explorer_get.assert_not_called()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].payload["_kind"], "native")
+
+    def test_bsc_trace_balances_use_indexed_holdings(self) -> None:
+        connector = EVMAddressConnector(ADDRESS, "BSC wallet", chain="bsc", config={"bsc_trace_api_key": "trace-key"})
+        with patch("app.connectors.evm.connector.bsctrace.fetch_balances", return_value=[]) as fetch:
+            self.assertEqual(list(connector.fetch_balances()), [])
+        fetch.assert_called_once_with(ADDRESS, "trace-key")
+
     def test_bsc_public_rpc_balances_use_native_lookup_and_configured_contracts(self) -> None:
         connector = EVMAddressConnector(
             ADDRESS, "BSC wallet", chain="bsc", config={"bsc_token_contracts": [OTHER_ADDRESS]}

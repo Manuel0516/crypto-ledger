@@ -176,6 +176,7 @@ interface SourceForm {
   native_symbol: string;
   explorer_api_url: string;
   explorer_api_key: string;
+  bsc_trace_api_key: string;
   bsc_token_contracts: string;
   address: string;
   host: string;
@@ -232,6 +233,7 @@ const EMPTY_FORM: SourceForm = {
   native_symbol: "ETH",
   explorer_api_url: "",
   explorer_api_key: "",
+  bsc_trace_api_key: "",
   bsc_token_contracts: "",
   address: "",
   host: "127.0.0.1",
@@ -300,7 +302,7 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
             .map((c) => c.trim())
             .filter(Boolean);
           const config: Record<string, unknown> = {};
-          if (form.explorer_api_key.trim()) config.explorer_api_key = form.explorer_api_key.trim();
+          if (form.bsc_trace_api_key.trim()) config.bsc_trace_api_key = form.bsc_trace_api_key.trim();
           if (contracts.length > 0) config.bsc_token_contracts = contracts;
           if (Object.keys(config).length > 0) body.config = config;
         }
@@ -567,12 +569,12 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
                       />
                     </Field>
                     <Field
-                      label="Etherscan API key (optional)"
-                      htmlFor="acc-explorer-key"
+                      label="BSCTrace / MegaNode API key (optional)"
+                      htmlFor="acc-bsc-trace-key"
                       className="sm:col-span-2"
-                      hint="Not required — BSC already works out of the box. Add a key only if you also want native BNB transaction history and automatic discovery of every token, not just the ones listed above."
+                      hint="Optional free indexed access. Add a key from the NodeReal/MegaNode dashboard to import native BNB, internal, BEP-20, NFT, and contract-call history across the account. Without it, the app uses public RPC fallback for native balance plus the default USDC/WBNB token logs."
                     >
-                      <Input id="acc-explorer-key" type="password" value={form.explorer_api_key} onChange={(e) => change("explorer_api_key", e.target.value)} placeholder="Etherscan API key" />
+                      <Input id="acc-bsc-trace-key" type="password" value={form.bsc_trace_api_key} onChange={(e) => change("bsc_trace_api_key", e.target.value)} placeholder="MegaNode API key" />
                     </Field>
                   </>
                 )}

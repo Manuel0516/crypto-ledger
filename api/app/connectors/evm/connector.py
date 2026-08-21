@@ -8,17 +8,17 @@ from typing import Iterable
 import httpx
 
 from app.connectors.base import Balance, ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
-from app.connectors.evm import bsc_rpc
+from app.connectors.evm import bsc_rpc, bsctrace
 
 # An EVM address is not enough to identify a chain: the same 0x address can
 # exist on every EVM network. Keep built-in networks explicit and never map an
 # unknown value back to Ethereum.
 #
 # Blockscout exposes a public Etherscan-compatible API for the first group.
-# Routescan indexes Avalanche, but does not index BSC. BSC is therefore wired
-# to Etherscan V2, which needs one user-supplied API key. Custom EVM networks
-# use the same Etherscan-compatible shape by default and can override the
-# endpoint in the encrypted account config.
+# BSC uses MegaNode/BSCTrace when a bsc_trace_api_key is configured, with the
+# old Etherscan-compatible path retained for existing accounts. Custom EVM
+# networks use the same Etherscan-compatible shape by default and can
+# override the endpoint in the encrypted account config.
 CHAINS: dict[str, tuple[str, str]] = {
     "ethereum": ("https://eth.blockscout.com/api", "Ethereum"),
     "polygon": ("https://polygon.blockscout.com/api", "Polygon"),
@@ -98,7 +98,7 @@ class EVMAddressConnector:
 
     @property
     def version(self) -> str:
-        return "evm-address-0.5"
+        return "evm-address-0.7"
 
     def _network_config(self) -> tuple[str, str, str, str | None, str]:
         if self.chain in CHAINS:
@@ -127,17 +127,13 @@ class EVMAddressConnector:
         return base, network, chain_id, api_key, native_symbol
 
     def _bsc_public_rpc_mode(self) -> bool:
-        """True when this account tracks BSC without an Etherscan key. There
-        is no free, keyless, indexed history API for BSC (Routescan doesn't
-        cover it; no Blockscout instance does either) — this mode falls
-        back to free public BSC RPC nodes instead: a live native BNB
-        balance always, plus real transfer history for the specific
-        BEP-20 contracts in _bsc_token_contracts() (see bsc_rpc.py). Native
-        BNB sends/receives and any token not in that list stay invisible —
-        a raw node has no per-address transaction index, only per-contract
-        log scanning."""
+        """True when this account has neither an indexed nor legacy key."""
         _base, _network, _chain_id, api_key, _native = self._network_config()
-        return self.chain == "bsc" and not api_key
+        return self.chain == "bsc" and not api_key and not self._bsc_trace_api_key()
+
+    def _bsc_trace_api_key(self) -> str | None:
+        key = str(self.config.get("bsc_trace_api_key") or "").strip()
+        return key or None
 
     def _bsc_token_contracts(self) -> list[str]:
         """Contracts to track for a keyless BSC account: the common tokens
@@ -241,6 +237,19 @@ class EVMAddressConnector:
         base, network, _chain_id, _api_key, native_symbol = self._network_config()
         if not _ETH_ADDRESS.fullmatch(self.address):
             raise ConnectorUnavailable(f"Invalid EVM address '{self.address}'. Use a 0x-prefixed 40-hex-character address.")
+        trace_key = self._bsc_trace_api_key()
+        if self.chain == "bsc" and trace_key:
+            namespace = f"{self.source_id}:{self.chain}:{self.address}"
+            for tx in bsctrace.fetch_transfers(self.address, trace_key, since):
+                payload = {**tx, "_network": network, "_native_symbol": native_symbol}
+                if tx["_kind"] == "contract_call":
+                    external_id = tx["hash"]
+                elif tx["_kind"] == "nft1155":
+                    external_id = f"{tx['hash']}-nft1155-{tx.get('contractAddress', '')}-{tx.get('tokenID', '')}-{tx.get('_item_index', '0')}"
+                else:
+                    external_id = f"{tx['hash']}-{tx['_kind']}-{tx.get('contractAddress', '')}-{tx.get('tokenID', tx.get('logIndex', '0'))}"
+                yield RawRecord(namespace, external_id, _timestamp(tx["timeStamp"]), payload)
+            return
         if self._bsc_public_rpc_mode():
             # Only history for contracts the user explicitly named is
             # retrievable this way (see bsc_rpc) — native BNB transfers and
@@ -286,6 +295,9 @@ class EVMAddressConnector:
         base, network, _chain_id, _api_key, native_symbol = self._network_config()
         if not _ETH_ADDRESS.fullmatch(self.address):
             raise ConnectorUnavailable(f"Invalid EVM address '{self.address}'. Use a 0x-prefixed 40-hex-character address.")
+        trace_key = self._bsc_trace_api_key()
+        if self.chain == "bsc" and trace_key:
+            return bsctrace.fetch_balances(self.address, trace_key)
         if self._bsc_public_rpc_mode():
             return self._fetch_bsc_public_rpc_balances(network, native_symbol)
         balances: list[Balance] = []
@@ -350,11 +362,7 @@ class EVMAddressConnector:
 
     @property
     def history_limit_note(self) -> str | None:
-        """Surfaced by sync_account() after a backfill (see Bitget/Binance
-        for the same convention) — this is a real, permanent property of a
-        BSC-without-a-key account, not a transient sync problem, so the
-        user should know the shape of what is and isn't covered rather
-        than assume the sync is broken."""
+        """Explain the deliberately limited no-key fallback to the user."""
         if self._bsc_public_rpc_mode():
             return (
                 "This BNB Smart Chain account is tracking a live native BNB balance plus the last 90 days of "
@@ -400,7 +408,7 @@ class EVMAddressConnector:
             event_type, direction = ("DEPOSIT", "+") if is_incoming else ("WITHDRAWAL", "-")
             amount = int(payload["value"]) / 1e18
             fees: list[NormalizedFee] = []
-            if not is_incoming:
+            if not is_incoming and not payload.get("_internal"):
                 gas_eth = int(payload["gasUsed"]) * int(payload["gasPrice"]) / 1e18
                 fees.append(NormalizedFee(fee_type="GAS_FEE", asset_symbol=native_symbol, amount=f"{gas_eth:.18f}"))
             return NormalizedEvent(
@@ -428,6 +436,10 @@ class EVMAddressConnector:
             event_type, direction = ("DEPOSIT", "+") if is_incoming else ("WITHDRAWAL", "-")
             decimals = int(payload.get("tokenDecimal") or 18)
             amount = int(payload["value"]) / (10**decimals)
+            fees: list[NormalizedFee] = []
+            if payload.get("_fee_for_wallet"):
+                gas_eth = int(payload.get("gasUsed") or 0) * int(payload.get("gasPrice") or 0) / 1e18
+                fees.append(NormalizedFee(fee_type="GAS_FEE", asset_symbol=native_symbol, amount=f"{gas_eth:.18f}"))
             return NormalizedEvent(
                 event_type=event_type,
                 event_subtype="token",
@@ -445,6 +457,7 @@ class EVMAddressConnector:
                 address_from=payload.get("from"),
                 address_to=payload.get("to"),
                 notes=f"{payload.get('tokenName') or 'Token'} transfer {payload['hash'][:12]}…",
+                fees=fees,
                 tx_hash=payload.get("hash"),
                 block_height=_maybe_int(payload.get("blockNumber")),
                 block_hash=payload.get("blockHash"),
@@ -459,6 +472,10 @@ class EVMAddressConnector:
         quantity = payload.get("tokenValue", "1") if kind == "nft1155" else "1"
         token_id = payload.get("tokenID", "")
         standard = "ERC-1155" if kind == "nft1155" else "ERC-721"
+        fees: list[NormalizedFee] = []
+        if payload.get("_fee_for_wallet"):
+            gas_eth = int(payload.get("gasUsed") or 0) * int(payload.get("gasPrice") or 0) / 1e18
+            fees.append(NormalizedFee(fee_type="GAS_FEE", asset_symbol=native_symbol, amount=f"{gas_eth:.18f}"))
         return NormalizedEvent(
             event_type=event_type,
             event_subtype=kind,
@@ -476,6 +493,7 @@ class EVMAddressConnector:
             address_from=payload.get("from"),
             address_to=payload.get("to"),
             notes=f"{standard} {payload.get('tokenName') or 'NFT'} #{token_id} · {payload['hash'][:12]}…",
+            fees=fees,
             tx_hash=payload.get("hash"),
             block_height=_maybe_int(payload.get("blockNumber")),
             block_hash=payload.get("blockHash"),

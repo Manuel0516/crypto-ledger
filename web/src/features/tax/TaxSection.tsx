@@ -59,6 +59,14 @@ export function TaxSection({ onOpenEvent }: TaxSectionProps) {
 
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
+  const [acknowledgeBlocking, setAcknowledgeBlocking] = useState(false);
+  useEffect(() => {
+    // Never carry an acknowledgment across a different country/year — each
+    // one has its own set of blocking issues, and reusing the checkbox
+    // state would silently skip confirming for a report the user hasn't
+    // actually looked at yet.
+    setAcknowledgeBlocking(false);
+  }, [country, year]);
 
   const persistPicker = async (nextCountry: string, nextYear: number, nextName: string, nextLanguage: string) => {
     await patchJson("/api/settings", { default_country: nextCountry, default_tax_year: nextYear, taxpayer_name: nextName || null, default_language: nextLanguage });
@@ -83,9 +91,15 @@ export function TaxSection({ onOpenEvent }: TaxSectionProps) {
     setGenerating(true);
     setGenError("");
     try {
-      const report = await postJson<TaxReport>("/api/tax/reports", { country, tax_year: year, language });
+      const report = await postJson<TaxReport>("/api/tax/reports", {
+        country,
+        tax_year: year,
+        language,
+        acknowledge_blocking_issues: acknowledgeBlocking,
+      });
       setActiveReport(report);
       await refreshHistory();
+      setAcknowledgeBlocking(false);
     } catch (reason) {
       setGenError(reason instanceof Error ? reason.message : "Could not generate the report");
     } finally {
@@ -192,10 +206,31 @@ export function TaxSection({ onOpenEvent }: TaxSectionProps) {
               </div>
             )}
 
+            {!readiness.ready && blockingIssues.length > 0 && (
+              <label className="mt-4 flex cursor-pointer items-start gap-2.5 rounded-lg border border-warn/30 bg-warn-soft px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  checked={acknowledgeBlocking}
+                  onChange={(e) => setAcknowledgeBlocking(e.target.checked)}
+                  className="mt-0.5 size-3.5 accent-warn"
+                />
+                <span className="text-xs text-ink">
+                  I understand {blockingIssues.length} blocking issue{blockingIssues.length === 1 ? "" : "s"} above may make this report incomplete or
+                  misclassified — generate anyway. This choice is recorded permanently in the report itself.
+                </span>
+              </label>
+            )}
+
             <div className="mt-4 flex flex-wrap items-center gap-2.5 border-t border-line pt-4">
               <Button size="sm" variant="ghost" onClick={() => void refreshReadiness()}>Re-check</Button>
-              <Button size="sm" variant="primary" disabled={!readiness.ready} loading={generating} onClick={() => void generate()}>
-                Generate tax report
+              <Button
+                size="sm"
+                variant={readiness.ready ? "primary" : "danger"}
+                disabled={!readiness.ready && !acknowledgeBlocking}
+                loading={generating}
+                onClick={() => void generate()}
+              >
+                {readiness.ready ? "Generate tax report" : "Generate anyway"}
               </Button>
               {genError && <span className="text-xs text-bad">{genError}</span>}
             </div>

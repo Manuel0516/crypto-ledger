@@ -113,6 +113,14 @@ class GenerateReportIn(BaseModel):
     tax_year: int
     method: str | None = None
     language: str | None = None
+    # Lets the user generate despite blocking readiness issues (an
+    # unclassified transfer, a missing price, ...) instead of being hard-
+    # gated. Never silent: acknowledging is a deliberate, separate step from
+    # the initial request (the frontend only sends this after the user
+    # explicitly confirms), and the override is recorded permanently inside
+    # the report itself (see the "acknowledged and overridden" warning
+    # appended below) — not just a checkbox that vanishes after the click.
+    acknowledge_blocking_issues: bool = False
 
 
 @router.post("/reports")
@@ -123,7 +131,8 @@ def generate_report(body: GenerateReportIn, session: Session = Depends(get_sessi
         raise HTTPException(404, str(exc))
 
     readiness_result = adapter.check_readiness(session, body.tax_year)
-    if not readiness_result.ready:
+    blocking_issues = [i for i in readiness_result.issues if i.severity == "blocking"]
+    if blocking_issues and not body.acknowledge_blocking_issues:
         raise HTTPException(400, "This country/year isn't ready — resolve the blocking readiness issues first.")
 
     settings = get_or_create_settings(session)
@@ -140,6 +149,17 @@ def generate_report(body: GenerateReportIn, session: Session = Depends(get_sessi
         raise HTTPException(502, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+    if blocking_issues:
+        # The override is part of the permanent record, not just a UI
+        # checkbox — anyone reading this report later (an accountant, a
+        # future you) sees exactly what was outstanding when it was made.
+        titles = ", ".join(sorted({i.title for i in blocking_issues}))
+        result.warnings = [
+            f"Generated despite {len(blocking_issues)} unresolved blocking readiness issue(s): {titles}. "
+            "The user explicitly chose to proceed — figures below may be incomplete or misclassified.",
+            *result.warnings,
+        ]
 
     report = TaxReport(
         country=adapter.country_code,

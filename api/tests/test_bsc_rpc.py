@@ -198,10 +198,10 @@ class LogScanningTests(unittest.TestCase):
         self.assertTrue(len(results) >= 1)
 
     def test_a_transient_non_size_error_is_retried_in_place_before_switching_endpoints(self) -> None:
-        # Real-world case: 1rpc.io returned "header not found" for a call
-        # that succeeded moments later against the exact same range — a
-        # decentralized relay routing to a different backend node on
-        # retry, not a real "this endpoint can't serve this" signal.
+        # Real-world case: a public RPC returned "header not found" for a
+        # call that succeeded moments later against the exact same range — a
+        # transient relay response, not a real "this endpoint can't serve
+        # this" signal.
         good_log = {
             "address": CONTRACT,
             "topics": [bsc_rpc._TRANSFER_TOPIC, "0x" + "0" * 24 + CONTRACT[2:], "0x" + "0" * 24 + ADDRESS[2:]],

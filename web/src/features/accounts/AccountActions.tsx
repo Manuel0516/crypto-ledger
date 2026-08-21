@@ -329,29 +329,35 @@ export function AccountActions({ account, onClose, onNavigate, onChanged }: Acco
           {reconcileResult && reconcileResult.status === "ok" && (
             <div className="mt-3">
               <p className="font-mono text-[10px] uppercase tracking-widest text-faint">Live balance vs. ledger</p>
-              <div className="mt-2 rounded-lg border border-line">
+              <div className="mt-2 overflow-hidden rounded-lg border border-line">
               {reconcileResult.assets.length === 0 ? (
                 <p className="px-3.5 py-3 text-[11px] text-soft">Nothing held here right now, live and ledger agree.</p>
               ) : (
-                <table className="w-full text-[11px]">
+                <table className="w-full table-fixed text-[11px]">
+                  <colgroup>
+                    <col className="w-[25%]" />
+                    <col className="w-[27%]" />
+                    <col className="w-[27%]" />
+                    <col className="w-[21%]" />
+                  </colgroup>
                   <thead>
                     <tr className="border-b border-line text-left text-faint">
-                      <th className="px-3 py-2 font-medium">Asset</th>
-                      <th className="px-3 py-2 font-medium">Live balance</th>
-                      <th className="px-3 py-2 font-medium">In ledger</th>
-                      <th className="px-3 py-2 font-medium"></th>
+                      <th className="px-2.5 py-2 font-medium sm:px-3">Asset</th>
+                      <th className="px-2.5 py-2 text-right font-medium sm:px-3">Live balance</th>
+                      <th className="px-2.5 py-2 text-right font-medium sm:px-3">In ledger</th>
+                      <th className="px-2.5 py-2 text-right font-medium sm:px-3"></th>
                     </tr>
                   </thead>
                   <tbody>
                     {reconcileResult.assets.map((asset) => (
                       <tr key={`${asset.asset_symbol}-${asset.asset_network ?? ""}`} className="border-b border-line last:border-0">
-                        <td className="px-3 py-2 text-ink">
-                          {asset.asset_symbol}
-                          {asset.asset_network && <span className="ml-1 text-faint">({asset.asset_network})</span>}
+                        <td className="min-w-0 break-words px-2.5 py-2.5 align-top text-ink sm:px-3">
+                          <span className="font-medium">{asset.asset_symbol}</span>
+                          {asset.asset_network && <span className="mt-0.5 block break-words text-faint">{asset.asset_network}</span>}
                         </td>
-                        <td className="px-3 py-2 text-ink">{asset.live_amount}</td>
-                        <td className="px-3 py-2 text-ink">{asset.computed_amount}</td>
-                        <td className="px-3 py-2">
+                        <td className="break-all px-2.5 py-2.5 text-right align-middle font-mono tabular-nums text-ink sm:px-3">{asset.live_amount}</td>
+                        <td className="break-all px-2.5 py-2.5 text-right align-middle font-mono tabular-nums text-ink sm:px-3">{asset.computed_amount}</td>
+                        <td className="px-2.5 py-2.5 text-right align-middle sm:px-3">
                           {asset.matches ? (
                             <Badge tone="success">Matches</Badge>
                           ) : (
@@ -421,6 +427,7 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
   const [nativeSymbol, setNativeSymbol] = useState(account.evm_config?.native_symbol ?? "ETH");
   const [explorerApiUrl, setExplorerApiUrl] = useState(account.evm_config?.explorer_api_url ?? "");
   const [explorerApiKey, setExplorerApiKey] = useState("");
+  const [bscTraceApiKey, setBscTraceApiKey] = useState("");
   const [bscTokenContracts, setBscTokenContracts] = useState((account.evm_config?.bsc_token_contracts ?? []).join("\n"));
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
@@ -457,7 +464,7 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
             .map((c) => c.trim())
             .filter(Boolean);
           const config: Record<string, unknown> = {};
-          if (explorerApiKey.trim()) config.explorer_api_key = explorerApiKey.trim();
+          if (bscTraceApiKey.trim()) config.bsc_trace_api_key = bscTraceApiKey.trim();
           config.bsc_token_contracts = contracts;
           body.config = config;
         }
@@ -527,8 +534,8 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
                 >
                   <Textarea id="edit-bsc-contracts" rows={2} value={bscTokenContracts} onChange={(e) => setBscTokenContracts(e.target.value)} placeholder="0x… (only needed for tokens beyond the defaults)" />
                 </Field>
-                <Field label="New Etherscan API key (optional)" htmlFor="edit-explorer-key" hint="Not required — BSC already works out of the box. Add a key only for native BNB history and automatic discovery of every token. Leave blank to keep the existing key, if any.">
-                  <Input id="edit-explorer-key" type="password" value={explorerApiKey} onChange={(e) => setExplorerApiKey(e.target.value)} placeholder="Unchanged" />
+                <Field label="New BSCTrace / MegaNode API key (optional)" htmlFor="edit-bsc-trace-key" hint="Add a key from the NodeReal/MegaNode dashboard to use indexed native, internal, BEP-20, NFT, and contract-call history. Leave blank to keep the current key.">
+                  <Input id="edit-bsc-trace-key" type="password" value={bscTraceApiKey} onChange={(e) => setBscTraceApiKey(e.target.value)} placeholder="Unchanged" />
                 </Field>
               </>
             )}

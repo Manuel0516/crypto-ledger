@@ -30,20 +30,17 @@ _PUBLIC_RPC_ENDPOINTS = (
 # unscoped, "every contract" scan gets refused there too, for the obvious
 # reason that BSC's log volume is enormous) — which is exactly the shape
 # this module needs, since a user names the specific BEP-20 contracts they
-# want tracked. publicnode enforces a "too many results" cap that varies
-# with how busy the queried contract is; 1rpc hard-caps every call to 50
-# blocks. Both are handled by the adaptive window in _scan_logs_for_topic.
+# want tracked. Public RPC providers enforce different result and block-range
+# caps; all are handled by the adaptive window in _scan_logs_for_topic.
 _LOG_RPC_ENDPOINTS = (
-    "https://bsc.publicnode.com",
-    "https://1rpc.io/bnb",
+    "https://bsc-rpc.publicnode.com",
+    "https://rpc-bsc.blockmachine.io",
 )
 
 _INITIAL_LOG_WINDOW_BLOCKS = 2000
 _MIN_LOG_WINDOW_BLOCKS = 25
-# A single flaky response — seen in practice from a decentralized relay
-# (1rpc.io routes each call to one of several backend nodes; an unlucky
-# route can return a spurious error a retry lands past) — shouldn't cost an
-# endpoint that's otherwise working. Retried in place before either
+# A single flaky response from a public relay shouldn't cost an endpoint
+# that's otherwise working. Retried in place before either
 # shrinking the window or giving up on the endpoint entirely.
 _MAX_TRANSIENT_RETRIES = 2
 _TRANSIENT_RETRY_DELAY_SECONDS = 0.5
@@ -71,14 +68,13 @@ _BALANCE_OF_SELECTOR = "0x70a08231"  # balanceOf(address)
 
 # JSON-RPC error messages seen in practice for "this window is too big" —
 # matched case-insensitively as a substring, since wording differs by
-# provider (publicnode: "query exceeds max results ..."; BNB Chain's own
-# nodes: "limit exceeded"; 1rpc.io: "log query range must not exceed N
-# blocks"). Anything else gets a bounded same-window retry (see
+# provider (for example "query exceeds max results ...", "limit exceeded",
+# or "log query range must not exceed N blocks"). Anything else gets a
+# bounded same-window retry (see
 # _MAX_TRANSIENT_RETRIES) before being treated as a real failure of that
-# endpoint — 1rpc.io in particular routes each call to one of several
-# backend nodes, and "header not found" / "historical state is not
-# available" have both been observed for a block range a *different*
-# backend serves without complaint moments later.
+# endpoint. "header not found" / "historical state is not available" can
+# occur for a block range a different backend serves without complaint
+# moments later.
 _WINDOW_TOO_LARGE_MARKERS = ("limit exceeded", "exceeds max results", "block range", "blocks range", "too many", "must not exceed")
 
 
@@ -213,9 +209,8 @@ def _scan_logs_for_topic(contract: str, wallet_topic: str, *, incoming: bool, fr
     the currently-used endpoint will actually serve: shrinks on a
     confirmed "too large" error and retries the same start point (never
     skips blocks); any other failure gets a few same-window retries first
-    (see _MAX_TRANSIENT_RETRIES — a decentralized relay like 1rpc.io routes
-    each call to one of several backend nodes, and a retry often lands on
-    a healthy one). Only once retries are exhausted at the floor window
+    (see _MAX_TRANSIENT_RETRIES). Only once retries are exhausted at the
+    floor window
     does it give up on the current endpoint and move to the next one in
     _LOG_RPC_ENDPOINTS — from the same start point, so a mid-scan endpoint
     failure never loses a block range, it just gets served by a different
