@@ -11,7 +11,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.connectors.base import ConnectorUnavailable, RawRecord
-from app.connectors.binance.live import BinanceLiveConnector
+from app.connectors.binance.live import BinanceLiveConnector, _ms, _seconds
 from app.connectors.bitget import BitgetConnector, BitgetLiveConnector
 from app.connectors.bitget.live import _is_additional_margin_financial, _is_additional_uta_financial
 from app.connectors.lightning import LightningConnector
@@ -65,6 +65,14 @@ def _solana_tx(*, outgoing: bool = False, token: bool = False) -> dict:
 
 
 class ConnectorFieldCoverageTests(unittest.TestCase):
+    def test_binance_timestamps_accept_milliseconds_seconds_and_date_strings(self) -> None:
+        expected = datetime(2024, 10, 6, 8, 29, 51, tzinfo=timezone.utc)
+
+        self.assertEqual(_ms(int(expected.timestamp() * 1000)), expected)
+        self.assertEqual(_seconds(int(expected.timestamp())), expected)
+        self.assertEqual(_ms("2024-10-06 08:29:51"), expected)
+        self.assertEqual(_ms("2024-10-06T08:29:51Z"), expected)
+
     def test_binance_signed_error_envelope_surfaces_provider_code_and_message(self) -> None:
         connector = BinanceLiveConnector("key", "secret", "Binance")
 

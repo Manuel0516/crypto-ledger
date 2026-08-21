@@ -276,7 +276,7 @@ class EVMConnectorTests(unittest.TestCase):
         with patch("app.connectors.evm.connector.bsc_rpc.fetch_token_transfers", return_value=iter([])) as mocked:
             self.assertEqual(list(connector.fetch(since=OCCURRED_AT)), [])
         mocked.assert_called_once_with(ADDRESS, list(_DEFAULT_BSC_TOKEN_CONTRACTS), OCCURRED_AT)
-        self.assertIn("usdt, usdc, busd, btcb, eth, and wbnb", connector.history_limit_note.lower())
+        self.assertIn("usdc and wbnb", connector.history_limit_note.lower())
 
     def test_bsc_without_key_adds_a_user_contract_on_top_of_the_defaults(self) -> None:
         connector = EVMAddressConnector(ADDRESS, "BSC wallet", chain="bsc", config={"bsc_token_contracts": [OTHER_ADDRESS]})

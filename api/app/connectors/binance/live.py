@@ -2068,7 +2068,37 @@ class BinanceLiveConnector:
 
 
 def _ms(value) -> datetime | None:
-    return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc) if value else None
+    """Parse Binance timestamps across the exchange's inconsistent formats.
+
+    Most endpoints return Unix milliseconds, while some older/product-specific
+    history endpoints return Unix seconds or a UTC date string such as
+    ``2024-10-06 08:29:51``.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    text = str(value).strip()
+    try:
+        numeric = Decimal(text)
+        # Unix seconds are currently ~1e9; milliseconds are ~1e12. Keep the
+        # threshold generous so decimal-formatted provider values work too.
+        timestamp_seconds = numeric if abs(numeric) < Decimal("10000000000") else numeric / Decimal(1000)
+        return datetime.fromtimestamp(float(timestamp_seconds), tz=timezone.utc)
+    except (InvalidOperation, OverflowError, ValueError, OSError):
+        pass
+
+    # Binance has returned both a plain UTC date and ISO-8601 timestamps from
+    # different product ledgers. Treat a timezone-less provider date as UTC.
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+        except ValueError as exc:
+            raise ValueError(f"Unsupported Binance timestamp: {value!r}") from exc
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _seconds(value) -> datetime | None:

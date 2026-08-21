@@ -40,17 +40,13 @@ CHAIN_IDS: dict[str, str] = {
 }
 
 # Tracked automatically for every BSC account that isn't using an Etherscan
-# key (see EVMAddressConnector._bsc_token_contracts) — the handful of
-# BEP-20 tokens most BSC wallets actually hold, so a new account already
-# reports USDT/USDC/etc. without the user having to look up contract
-# addresses first. Each address was confirmed on-chain (symbol()/decimals()
-# read back as expected) before being hardcoded here.
+# key (see EVMAddressConnector._bsc_token_contracts). Keep this deliberately
+# small for free public RPC providers: USDC and WBNB cover the keyless default
+# use case, while native BNB is tracked separately as a live balance because
+# it is not a BEP-20 contract. Each address was confirmed on-chain
+# (symbol()/decimals() read back as expected) before being hardcoded here.
 _DEFAULT_BSC_TOKEN_CONTRACTS: tuple[str, ...] = (
-    "0x55d398326f99059fF775485246999027B3197955",  # USDT (Binance-Peg BSC-USD)
     "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",  # USDC
-    "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56",  # BUSD (Binance-Peg)
-    "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c",  # BTCB (Binance-Peg Bitcoin)
-    "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",  # ETH (Binance-Peg Ethereum)
     "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",  # WBNB (Wrapped BNB — distinct from native BNB)
 )
 
@@ -362,7 +358,7 @@ class EVMAddressConnector:
         if self._bsc_public_rpc_mode():
             return (
                 "This BNB Smart Chain account is tracking a live native BNB balance plus the last 90 days of "
-                "transfer history for USDT, USDC, BUSD, BTCB, ETH, and WBNB automatically, using free public BSC "
+                "transfer history for USDC and WBNB automatically, using free public BSC "
                 "nodes — add more BEP-20 contract addresses in this source's settings to track other tokens the "
                 "same way. Native BNB sends/receives can't be tracked this way (no free service indexes them), so "
                 "those won't appear in Activity."

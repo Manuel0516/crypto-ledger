@@ -523,7 +523,7 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
                   label="Additional BEP-20 token contracts (optional)"
                   htmlFor="edit-bsc-contracts"
                   className="sm:col-span-2"
-                  hint="Native BNB and USDT, USDC, BUSD, BTCB, ETH, and WBNB are tracked automatically. List any other token's contract address here (one per line or comma-separated) to track it too."
+                  hint="Native BNB balance plus USDC and WBNB transfer history are tracked automatically. Native BNB transfers are not contract logs; list any other token's contract address here (one per line or comma-separated) to track it too."
                 >
                   <Textarea id="edit-bsc-contracts" rows={2} value={bscTokenContracts} onChange={(e) => setBscTokenContracts(e.target.value)} placeholder="0x… (only needed for tokens beyond the defaults)" />
                 </Field>
