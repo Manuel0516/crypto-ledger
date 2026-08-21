@@ -6,9 +6,10 @@ from typing import Iterable
 
 import httpx
 
-from app.connectors.base import ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
+from app.connectors.base import Balance, ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
 
 RPC_URL = "https://api.mainnet-beta.solana.com"
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
 # A few well-known SPL mints, so common stablecoins show a real symbol
 # instead of a truncated mint address. Anything else still gets tracked
@@ -198,6 +199,30 @@ class SolanaAddressConnector:
         wanted_sign = -1 if net > 0 else 1
         candidates = [(abs(delta), party) for party, delta in by_party.items() if delta * wanted_sign > 0]
         return max(candidates, key=lambda candidate: candidate[0])[1] if candidates else None
+
+    def fetch_balances(self) -> Iterable[Balance]:
+        balances: list[Balance] = []
+
+        native = self._rpc("getBalance", [self.address])
+        lamports = (native or {}).get("value") if isinstance(native, dict) else None
+        if lamports:
+            balances.append(Balance("SOL", f"{lamports / 1e9:.9f}", asset_network="Solana"))
+
+        token_accounts = self._rpc(
+            "getTokenAccountsByOwner",
+            [self.address, {"programId": TOKEN_PROGRAM_ID}, {"encoding": "jsonParsed"}],
+        )
+        for entry in (token_accounts or {}).get("value", []):
+            info = entry.get("account", {}).get("data", {}).get("parsed", {}).get("info", {})
+            token_amount = info.get("tokenAmount", {})
+            ui_amount = token_amount.get("uiAmount")
+            if not ui_amount:
+                continue
+            mint = info.get("mint", "")
+            symbol, _ = KNOWN_MINTS.get(mint, (f"{mint[:4]}…{mint[-4:]}" if mint else "UNKNOWN", None))
+            decimals = token_amount.get("decimals", 9)
+            balances.append(Balance(symbol, f"{ui_amount:.{min(decimals, 18)}f}", asset_network="Solana", asset_contract=mint))
+        return balances
 
     def normalize(self, raw: RawRecord) -> NormalizedEvent:
         payload = raw.payload

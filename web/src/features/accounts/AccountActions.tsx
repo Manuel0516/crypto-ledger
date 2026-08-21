@@ -1,6 +1,6 @@
-import { useRef, useState } from "react";
-import { Archive, ArchiveRestore, History, Pause, Pencil, Play, RefreshCw, Trash2, Upload } from "lucide-react";
-import type { Account, Page, SyncResult } from "../../types";
+import { useEffect, useRef, useState } from "react";
+import { Archive, ArchiveRestore, Check, History, Pause, Pencil, Play, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import type { Account, NWCPermissionsResult, Page, ReconcileResult, SyncResult } from "../../types";
 import { Dialog } from "../../components/ui/Dialog";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -8,8 +8,20 @@ import { Field, Input, Select, Textarea } from "../../components/ui/Field";
 import { StatusPill } from "../../components/domain/StatusPill";
 import { accountKindLabel } from "../../components/domain/SourceCard";
 import { connectorSummary, connectorTypeMeta, EVM_CHAINS } from "./connectorTypes";
-import { apiFetch, patchJson, postJson, uploadFile } from "../../lib/api";
+import { apiFetch, getJson, patchJson, postJson, uploadFile } from "../../lib/api";
 import { relativeTime } from "../../lib/format";
+
+// The permission labels this app actually relies on — a connection granting
+// exactly these (and nothing more) is the ideal, minimum-permission case.
+const OBSERVER_PERMISSIONS: { method: string; label: string }[] = [
+  { method: "GET_BALANCE", label: "Read balance" },
+  { method: "LIST_TRANSACTIONS", label: "Read transactions" },
+];
+
+// Sync/Backfill responses carry a `reconciliation` field whenever the
+// source's connector can report a live balance (see fetch_balances on the
+// backend connectors) — the server decides per-source, so there's nothing
+// to gate here; a source without one just comes back null.
 
 interface AccountActionsProps {
   account: Account;
@@ -24,23 +36,49 @@ export function AccountActions({ account, onClose, onNavigate, onChanged }: Acco
   const [syncing, setSyncing] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [reconcileResult, setReconcileResult] = useState<ReconcileResult | null>(null);
+  const [permissions, setPermissions] = useState<NWCPermissionsResult | null>(null);
   const [working, setWorking] = useState(false);
   const [pendingAction, setPendingAction] = useState<"archive" | "unarchive" | "delete" | null>(null);
   const [feedback, setFeedback] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const isArchived = Boolean(account.archived_at);
 
+  useEffect(() => {
+    if (account.connector_type !== "lightning_nwc") return;
+    let cancelled = false;
+    void getJson<NWCPermissionsResult>(`/api/accounts/${account.id}/nwc-permissions`).then(
+      (result) => {
+        if (!cancelled) setPermissions(result);
+      },
+      () => {
+        /* silent — the account detail view just won't show a permissions block */
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [account.connector_type, account.id]);
+
   const describeSync = (result: SyncResult) => {
-    if (result.status === "ok") return `${result.imported} new, ${result.skipped} already recorded.`;
+    // result.message carries a source-imposed limitation note (e.g. Bitget's
+    // UTA API only exposing 90 days) even on a successful sync — worth
+    // showing alongside the counts, not just on failure.
+    if (result.status === "ok") {
+      const base = `${result.imported} new, ${result.skipped} already recorded.`;
+      return result.message ? `${base} ${result.message}` : base;
+    }
     return result.message ?? "Sync could not complete.";
   };
 
   const sync = async () => {
     setSyncing(true);
     setFeedback(null);
+    setReconcileResult(null);
     try {
       const result = await postJson<SyncResult>(`/api/accounts/${account.id}/sync`, {});
       setFeedback({ tone: result.status === "unavailable" ? "bad" : "good", text: `Synced — ${describeSync(result)}` });
+      setReconcileResult(result.reconciliation);
       onChanged();
     } catch (reason) {
       setFeedback({ tone: "bad", text: reason instanceof Error ? reason.message : "Sync failed" });
@@ -52,9 +90,11 @@ export function AccountActions({ account, onClose, onNavigate, onChanged }: Acco
   const backfill = async () => {
     setBackfilling(true);
     setFeedback(null);
+    setReconcileResult(null);
     try {
       const result = await postJson<SyncResult>(`/api/accounts/${account.id}/backfill`, {});
       setFeedback({ tone: result.status === "unavailable" ? "bad" : "good", text: `Backfilled — ${describeSync(result)}` });
+      setReconcileResult(result.reconciliation);
       onChanged();
     } catch (reason) {
       setFeedback({ tone: "bad", text: reason instanceof Error ? reason.message : "Backfill failed" });
@@ -185,6 +225,34 @@ export function AccountActions({ account, onClose, onNavigate, onChanged }: Acco
           </div>
         </dl>
 
+        {account.connector_type === "lightning_nwc" && permissions && permissions.status === "ok" && (
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-widest text-faint">Permissions</p>
+            <ul className="mt-2 space-y-1.5 text-xs">
+              {OBSERVER_PERMISSIONS.map(({ method, label }) => {
+                const granted = permissions.methods.includes(method);
+                return (
+                  <li key={method} className={`flex items-center gap-2 ${granted ? "text-ink" : "text-faint"}`}>
+                    {granted ? <Check size={14} className="text-good" /> : <X size={14} className="text-faint" />}
+                    {label}
+                  </li>
+                );
+              })}
+              <li className="flex items-center gap-2 text-ink">
+                <X size={14} className="text-good" />
+                Send payments — never requested, never used
+              </li>
+            </ul>
+            {permissions.extra_methods.length > 0 && (
+              <p className="mt-2 rounded-lg bg-warn-soft px-3 py-2 text-[11px] text-warn">
+                This connection also grants {permissions.extra_methods.join(", ").toLowerCase()} — more than this app
+                needs. It's never used, but if your wallet supports issuing a read-only connection, reconnecting with
+                one is the safer choice.
+              </p>
+            )}
+          </div>
+        )}
+
         <div>
           <p className="font-mono text-[10px] uppercase tracking-widest text-faint">Source actions</p>
           {!pendingAction && (
@@ -250,6 +318,48 @@ export function AccountActions({ account, onClose, onNavigate, onChanged }: Acco
           {feedback && (
             <p className={`mt-3 text-[11px] ${feedback.tone === "good" ? "text-good" : "text-bad"}`}>{feedback.text}</p>
           )}
+          {reconcileResult && reconcileResult.status === "ok" && (
+            <div className="mt-3">
+              <p className="font-mono text-[10px] uppercase tracking-widest text-faint">Live balance vs. ledger</p>
+              <div className="mt-2 rounded-lg border border-line">
+              {reconcileResult.assets.length === 0 ? (
+                <p className="px-3.5 py-3 text-[11px] text-soft">Nothing held here right now, live and ledger agree.</p>
+              ) : (
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="border-b border-line text-left text-faint">
+                      <th className="px-3 py-2 font-medium">Asset</th>
+                      <th className="px-3 py-2 font-medium">Live balance</th>
+                      <th className="px-3 py-2 font-medium">In ledger</th>
+                      <th className="px-3 py-2 font-medium"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reconcileResult.assets.map((asset) => (
+                      <tr key={`${asset.asset_symbol}-${asset.asset_network ?? ""}`} className="border-b border-line last:border-0">
+                        <td className="px-3 py-2 text-ink">
+                          {asset.asset_symbol}
+                          {asset.asset_network && <span className="ml-1 text-faint">({asset.asset_network})</span>}
+                        </td>
+                        <td className="px-3 py-2 text-ink">{asset.live_amount}</td>
+                        <td className="px-3 py-2 text-ink">{asset.computed_amount}</td>
+                        <td className="px-3 py-2">
+                          {asset.matches ? (
+                            <Badge tone="success">Matches</Badge>
+                          ) : (
+                            <span title={`Live balance and the computed ledger total differ by ${asset.difference}`}>
+                              <Badge tone="danger">Mismatch</Badge>
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              </div>
+            </div>
+          )}
           {!account.syncable && account.connector_type !== "exchange_import" && (
             <p className="mt-3 text-[11px] text-faint">
               This source doesn't support automatic sync yet — add or correct its history with manual entries.
@@ -302,10 +412,12 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
   const [apiSecret, setApiSecret] = useState("");
   const [passphrase, setPassphrase] = useState("");
   const [symbols, setSymbols] = useState("");
+  const [nwcConnectionString, setNwcConnectionString] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   const isLiveExchange = LIVE_EXCHANGE_TYPES.includes(account.connector_type);
+  const isNwc = account.connector_type === "lightning_nwc";
 
   const save = async () => {
     setSaving(true);
@@ -323,6 +435,9 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
           account.connector_type === "bitget_live"
             ? { api_key: apiKey, api_secret: apiSecret, passphrase }
             : { api_key: apiKey, api_secret: apiSecret, symbols };
+      }
+      if (isNwc && nwcConnectionString.trim()) {
+        body.config = { connection_string: nwcConnectionString };
       }
       await patchJson(`/api/accounts/${account.id}`, body);
       onSaved();
@@ -393,6 +508,22 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
                 </Field>
               )}
             </div>
+          </div>
+        )}
+        {isNwc && (
+          <div className="space-y-4 rounded-lg border border-line p-3.5">
+            <p className="text-[11px] text-soft">
+              Rotate the NWC connection — leave blank to keep the current one.
+            </p>
+            <Field label="New NWC connection string" htmlFor="edit-nwc-uri">
+              <Textarea
+                id="edit-nwc-uri"
+                rows={3}
+                value={nwcConnectionString}
+                onChange={(e) => setNwcConnectionString(e.target.value)}
+                placeholder="Unchanged"
+              />
+            </Field>
           </div>
         )}
         <Field label="Wallet software" htmlFor="edit-software">

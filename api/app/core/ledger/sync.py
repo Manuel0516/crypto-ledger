@@ -6,16 +6,10 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.connectors.base import ConnectorUnavailable
-from app.connectors.binance import BinanceLiveConnector
-from app.connectors.bitcoin import BitcoinAddressConnector, BitcoinXpubConnector, looks_like_extended_key
-from app.connectors.bitget import BitgetLiveConnector
-from app.connectors.evm import EVMAddressConnector
-from app.connectors.lightning import LightningConnector
-from app.connectors.monero import MoneroConnector
-from app.connectors.solana import SolanaAddressConnector
+from app.core.ledger.connectors import build_connector
+from app.core.ledger.reconcile import ReconcileResult, reconcile_account
 from app.core.ledger.service import ingest, record_sync
 from app.db.models import Account, Issue
-from app.security.secrets import decrypt_config
 
 SYNCABLE_TYPES = {
     "bitcoin_address",
@@ -23,9 +17,13 @@ SYNCABLE_TYPES = {
     "solana_address",
     "monero_rpc",
     "lightning_node",
+    "lightning_nwc",
     "bitget_live",
     "binance_live",
 }
+
+_BALANCE_MISMATCH_TITLE = "{name} balance doesn't match the live source"
+_SPEND_PERMISSION_TITLE = "{name} connection grants more than read access"
 
 
 @dataclass
@@ -34,45 +32,79 @@ class SyncResult:
     imported: int = 0
     skipped: int = 0
     message: str | None = None
+    reconciliation: ReconcileResult | None = None
 
 
-def _build_connector(account: Account):
-    if account.connector_type == "bitcoin_address":
-        address = account.address or ""
-        if looks_like_extended_key(address):
-            return BitcoinXpubConnector(address, account.name)
-        return BitcoinAddressConnector(address, account.name)
-    if account.connector_type == "evm_address":
-        return EVMAddressConnector(account.address, account.name, chain=account.chain_network or "ethereum")
-    if account.connector_type == "solana_address":
-        return SolanaAddressConnector(account.address, account.name)
-    if account.connector_type == "monero_rpc":
-        config = decrypt_config(account.config_encrypted) if account.config_encrypted else {}
-        return MoneroConnector(
-            config.get("host", "127.0.0.1"),
-            int(config.get("port", 18082)),
-            account.name,
-            username=config.get("username") or None,
-            password=config.get("password") or None,
-        )
-    if account.connector_type == "lightning_node":
-        config = decrypt_config(account.config_encrypted) if account.config_encrypted else {}
-        return LightningConnector(config.get("host", ""), config.get("macaroon", ""), account.name)
-    if account.connector_type == "bitget_live":
-        config = decrypt_config(account.config_encrypted) if account.config_encrypted else {}
-        return BitgetLiveConnector(config.get("api_key", ""), config.get("api_secret", ""), config.get("passphrase", ""), account.name)
-    if account.connector_type == "binance_live":
-        config = decrypt_config(account.config_encrypted) if account.config_encrypted else {}
-        symbols = [s.strip().upper() for s in (config.get("symbols") or "").split(",") if s.strip()]
-        return BinanceLiveConnector(config.get("api_key", ""), config.get("api_secret", ""), account.name, symbols=symbols)
-    return None
+def _reconcile_and_flag(session: Session, account: Account, connector) -> ReconcileResult | None:
+    """Runs a balance check right after a successful sync, for any source
+    that supports one (see fetch_balances on the connector) — every sync,
+    not just a manual one-off, so drift gets caught by the scheduler too.
+    Best-effort: a reconciliation problem (network hiccup, an unsupported
+    source) must never fail the sync that already succeeded."""
+    if getattr(connector, "fetch_balances", None) is None:
+        return None
+    try:
+        result = reconcile_account(session, account, connector=connector)
+    except Exception:
+        return None
+    if result.status != "ok":
+        return result
+
+    title = _BALANCE_MISMATCH_TITLE.format(name=account.name)
+    existing = session.query(Issue).filter_by(title=title, resolved=False).first()
+    mismatches = [a for a in result.assets if not a.matches]
+    if not mismatches:
+        if existing is not None:
+            existing.resolved = True
+        return result
+
+    detail = "; ".join(f"{a.asset_symbol}: live {a.live_amount}, ledger {a.computed_amount}" for a in mismatches)
+    if existing is not None:
+        existing.detail = detail
+        existing.created_at = datetime.now(timezone.utc)
+    else:
+        session.add(Issue(event_id=None, severity="warning", title=title, detail=detail))
+    return result
+
+
+def _check_permissions_and_flag(session: Session, account: Account, connector) -> None:
+    """For a connector that can report its own actual permissions (NWC's
+    get_info) — never used to decide whether to call anything (this app
+    never calls a spend-capable method regardless of what's granted), only
+    to tell the user their connection grants more than this app needs.
+    Best-effort and non-blocking, same shape as _reconcile_and_flag."""
+    permissions_fn = getattr(connector, "permissions", None)
+    if permissions_fn is None:
+        return
+    try:
+        permissions = permissions_fn()
+    except Exception:
+        return
+
+    title = _SPEND_PERMISSION_TITLE.format(name=account.name)
+    existing = session.query(Issue).filter_by(title=title, resolved=False).first()
+    if not permissions.has_spend_capability:
+        if existing is not None:
+            existing.resolved = True
+        return
+
+    detail = (
+        f"This connection grants {', '.join(permissions.extra_methods)} in addition to read access. "
+        "This app never uses payment-capable permissions, but you may want to reconnect with a "
+        "read-only NWC connection if your wallet supports issuing one."
+    )
+    if existing is not None:
+        existing.detail = detail
+        existing.created_at = datetime.now(timezone.utc)
+    else:
+        session.add(Issue(event_id=None, severity="warning", title=title, detail=detail))
 
 
 def sync_account(session: Session, account: Account, *, backfill: bool = False) -> SyncResult:
     """backfill=True pulls deeper history (first connection); backfill=False
     is the routine incremental check a background scheduler runs on a timer
     — cheap, and safe to repeat because raw evidence storage is idempotent."""
-    connector = _build_connector(account)
+    connector = build_connector(account)
     if connector is None:
         return SyncResult(
             status="unsupported",
@@ -103,8 +135,15 @@ def sync_account(session: Session, account: Account, *, backfill: bool = False) 
         account.status = "connected"
         account.last_sync = datetime.now(timezone.utc)
         record_sync(session, connector.source_id, imported)
+        reconciliation = _reconcile_and_flag(session, account, connector)
+        _check_permissions_and_flag(session, account, connector)
+        # A hard, source-imposed history cutoff (e.g. Bitget's UTA API only
+        # exposing 90 days) is worth surfacing right after the deep pull
+        # that would otherwise hit it — not on every routine incremental
+        # sync, where it'd just be repeated noise.
+        message = getattr(connector, "history_limit_note", None) if backfill else None
         session.commit()
-        return SyncResult(status="ok", imported=imported, skipped=skipped)
+        return SyncResult(status="ok", imported=imported, skipped=skipped, message=message, reconciliation=reconciliation)
 
     except ConnectorUnavailable as exc:
         account.status = "error"

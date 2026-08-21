@@ -112,8 +112,18 @@ class LightningConnector:
                 status="COMPLETE",
                 occurred_at=occurred_at,
                 original_timestamp=occurred_at.isoformat(),
+                # No asset_network: BTC moved over Lightning is still BTC —
+                # the same fungible holding as on-chain BTC, not a distinct
+                # asset the way a bridged token is. Leaving this unset
+                # resolves to the ledger's canonical "Bitcoin" network via
+                # get_or_create_asset, so on-chain + Lightning balances sum
+                # into one portfolio figure (event_subtype still
+                # distinguishes them in Activity). Previously tagged
+                # "Lightning" here, which fragmented a user's real BTC
+                # holdings into two separate line items — and, since the
+                # Overview page keys its cards by symbol, produced a
+                # duplicate-key render bug whenever both were connected.
                 asset_symbol="BTC",
-                asset_network="Lightning",
                 amount=_msat_to_btc(value_msat),
                 source_label=self.account_label,
                 notes=f"Lightning payment · {payload.get('payment_hash', '')[:16]}",
@@ -130,8 +140,18 @@ class LightningConnector:
                 status="COMPLETE",
                 occurred_at=occurred_at,
                 original_timestamp=occurred_at.isoformat(),
+                # No asset_network: BTC moved over Lightning is still BTC —
+                # the same fungible holding as on-chain BTC, not a distinct
+                # asset the way a bridged token is. Leaving this unset
+                # resolves to the ledger's canonical "Bitcoin" network via
+                # get_or_create_asset, so on-chain + Lightning balances sum
+                # into one portfolio figure (event_subtype still
+                # distinguishes them in Activity). Previously tagged
+                # "Lightning" here, which fragmented a user's real BTC
+                # holdings into two separate line items — and, since the
+                # Overview page keys its cards by symbol, produced a
+                # duplicate-key render bug whenever both were connected.
                 asset_symbol="BTC",
-                asset_network="Lightning",
                 amount=_msat_to_btc(value_msat),
                 source_label=self.account_label,
                 notes=f"Lightning invoice settled{' · ' + payload['memo'] if payload.get('memo') else ''}",
@@ -147,8 +167,18 @@ class LightningConnector:
                 status="REQUIRES_REVIEW",
                 occurred_at=occurred_at,
                 original_timestamp=occurred_at.isoformat(),
+                # No asset_network: BTC moved over Lightning is still BTC —
+                # the same fungible holding as on-chain BTC, not a distinct
+                # asset the way a bridged token is. Leaving this unset
+                # resolves to the ledger's canonical "Bitcoin" network via
+                # get_or_create_asset, so on-chain + Lightning balances sum
+                # into one portfolio figure (event_subtype still
+                # distinguishes them in Activity). Previously tagged
+                # "Lightning" here, which fragmented a user's real BTC
+                # holdings into two separate line items — and, since the
+                # Overview page keys its cards by symbol, produced a
+                # duplicate-key render bug whenever both were connected.
                 asset_symbol="BTC",
-                asset_network="Lightning",
                 amount=f"{capacity_sat / 1e8:.8f}",
                 source_label=self.account_label,
                 counterparty=payload.get("remote_pubkey"),
@@ -168,8 +198,7 @@ class LightningConnector:
             status="REQUIRES_REVIEW",
             occurred_at=occurred_at,
             original_timestamp=occurred_at.isoformat(),
-            asset_symbol="BTC",
-            asset_network="Lightning",
+            asset_symbol="BTC",  # see the on-chain-unification note above
             amount=f"{settled_sat / 1e8:.8f}",
             source_label=self.account_label,
             counterparty=payload.get("remote_pubkey"),

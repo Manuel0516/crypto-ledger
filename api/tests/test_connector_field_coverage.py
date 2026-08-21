@@ -168,6 +168,178 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
         self.assertEqual(event.fees[0].asset_symbol, "BTC")
         self.assertEqual(event.fees[0].amount, "0.0001")
 
+    def test_bitget_uta_fill_has_quote_leg_and_list_shaped_fees(self) -> None:
+        connector = BitgetLiveConnector("key", "secret", "pass", "Bitget")
+        event = connector.normalize(
+            RawRecord(
+                "bitget",
+                "uta-fill-1",
+                OCCURRED_AT,
+                {
+                    "_kind": "uta_fill",
+                    "_category": "SPOT",
+                    "symbol": "BTCUSDT",
+                    "side": "buy",
+                    "execQty": "0.1",
+                    "execValue": "5000",
+                    "execId": "e1",
+                    "orderId": "o1",
+                    "feeDetail": [{"feeCoin": "USDT", "fee": "0.5"}],
+                },
+            )
+        )
+        self.assertEqual(event.event_type, "BUY")
+        self.assertEqual(event.asset_symbol, "BTC")
+        self.assertEqual(event.secondary_asset_symbol, "USDT")
+        self.assertEqual(event.secondary_amount, "5000")
+        self.assertEqual(event.fees[0].asset_symbol, "USDT")
+        self.assertEqual(event.fees[0].amount, "0.5")
+        self.assertEqual(event.trade_id, "e1")
+
+    def test_bitget_uta_deposit_and_withdrawal_track_on_chain_hash(self) -> None:
+        connector = BitgetLiveConnector("key", "secret", "pass", "Bitget")
+        deposit = connector.normalize(
+            RawRecord(
+                "bitget",
+                "uta-deposit-1",
+                OCCURRED_AT,
+                {"_kind": "uta_deposit", "coin": "usdt", "size": "100", "status": "success", "dest": "on_chain", "recordId": "0xhash", "orderId": "o1"},
+            )
+        )
+        self.assertEqual(deposit.event_type, "DEPOSIT")
+        self.assertEqual(deposit.asset_symbol, "USDT")
+        self.assertEqual(deposit.tx_hash, "0xhash")
+
+        internal_deposit = connector.normalize(
+            RawRecord(
+                "bitget",
+                "uta-deposit-2",
+                OCCURRED_AT,
+                {"_kind": "uta_deposit", "coin": "usdt", "size": "1", "status": "success", "dest": "internal_transfer", "recordId": "order-id", "orderId": "o2"},
+            )
+        )
+        self.assertIsNone(internal_deposit.tx_hash)
+
+        withdrawal = connector.normalize(
+            RawRecord(
+                "bitget",
+                "uta-withdrawal-1",
+                OCCURRED_AT,
+                {"_kind": "uta_withdrawal", "coin": "usdt", "size": "50", "status": "success", "dest": "on_chain", "recordId": "0xhash2", "orderId": "o3", "fee": "1"},
+            )
+        )
+        self.assertEqual(withdrawal.event_type, "WITHDRAWAL")
+        self.assertEqual(withdrawal.direction, "-")
+        self.assertEqual(withdrawal.fees[0].amount, "1.0")
+        self.assertEqual(withdrawal.tx_hash, "0xhash2")
+
+    def test_bitget_uta_financial_record_maps_known_types_only(self) -> None:
+        connector = BitgetLiveConnector("key", "secret", "pass", "Bitget")
+        funding = connector.normalize(
+            RawRecord(
+                "bitget",
+                "uta-financial-1",
+                OCCURRED_AT,
+                {"_kind": "uta_financial", "_category": "USDT-FUTURES", "type": "CONTRACT_MAIN_SETTLE_FEE_USER_OUT", "coin": "USDT", "amount": "-0.5", "id": "f1"},
+            )
+        )
+        self.assertEqual(funding.event_type, "FUNDING_PAYMENT")
+        self.assertEqual(funding.direction, "-")
+        self.assertEqual(funding.amount, "0.5")
+
+    def test_bitget_uta_convert_has_both_legs(self) -> None:
+        connector = BitgetLiveConnector("key", "secret", "pass", "Bitget")
+        convert = connector.normalize(
+            RawRecord(
+                "bitget",
+                "uta-convert-1",
+                OCCURRED_AT,
+                {"_kind": "uta_convert", "fromCoin": "USDT", "fromCoinSize": "100", "toCoin": "ETH", "toCoinSize": "0.03"},
+            )
+        )
+        self.assertEqual(convert.event_type, "BUY")
+        self.assertEqual(convert.asset_symbol, "ETH")
+        self.assertEqual(convert.amount, "0.03")
+        self.assertEqual(convert.secondary_asset_symbol, "USDT")
+        self.assertEqual(convert.secondary_amount, "100")
+
+    def test_bitget_mode_detection_switches_to_uta_on_40085(self) -> None:
+        connector = BitgetLiveConnector("key", "secret", "pass", "Bitget")
+
+        def fake_get(path, params=None):
+            if path == "/api/v2/spot/account/info":
+                from app.connectors.bitget.live import BitgetApiError
+
+                raise BitgetApiError("40085", "You are in Unified Account mode, and the Classic Account API is not supported at this time")
+            raise AssertionError(f"unexpected path {path}")
+
+        connector._get = fake_get  # type: ignore[method-assign]
+        connector._detect_mode()
+        self.assertEqual(connector.mode, "uta")
+
+    def test_bitget_mode_detection_reraises_other_errors(self) -> None:
+        connector = BitgetLiveConnector("key", "secret", "pass", "Bitget")
+
+        def fake_get(path, params=None):
+            from app.connectors.bitget.live import BitgetApiError
+
+            raise BitgetApiError("40001", "invalid sign")
+
+        connector._get = fake_get  # type: ignore[method-assign]
+        with self.assertRaises(Exception):
+            connector._detect_mode()
+        self.assertIsNone(connector.mode)
+
+    def test_binance_convert_and_fiat_events(self) -> None:
+        connector = BinanceLiveConnector("key", "secret", "Binance")
+        convert = connector.normalize(
+            RawRecord("binance", "convert-1", OCCURRED_AT, {"_kind": "convert", "fromAsset": "USDT", "fromAmount": "20", "toAsset": "BNB", "toAmount": "0.06", "orderId": 1})
+        )
+        self.assertEqual(convert.event_type, "BUY")
+        self.assertEqual(convert.asset_symbol, "BNB")
+        self.assertEqual(convert.secondary_asset_symbol, "USDT")
+        self.assertEqual(convert.secondary_amount, "20")
+
+        fiat_buy = connector.normalize(
+            RawRecord(
+                "binance",
+                "fiat-buy-1",
+                OCCURRED_AT,
+                {"_kind": "fiat_buy", "cryptoCurrency": "BTC", "obtainAmount": "0.01", "fiatCurrency": "EUR", "sourceAmount": "500", "totalFee": "5", "orderNo": "n1"},
+            )
+        )
+        self.assertEqual(fiat_buy.event_type, "BUY")
+        self.assertEqual(fiat_buy.asset_symbol, "BTC")
+        self.assertEqual(fiat_buy.amount, "0.01")
+        self.assertEqual(fiat_buy.secondary_asset_symbol, "EUR")
+        self.assertEqual(fiat_buy.fees[0].amount, "5")
+
+        fiat_sell = connector.normalize(
+            RawRecord(
+                "binance",
+                "fiat-sell-1",
+                OCCURRED_AT,
+                {"_kind": "fiat_sell", "cryptoCurrency": "BTC", "sourceAmount": "0.01", "fiatCurrency": "EUR", "obtainAmount": "500", "orderNo": "n2"},
+            )
+        )
+        self.assertEqual(fiat_sell.event_type, "SELL")
+        self.assertEqual(fiat_sell.direction, "-")
+        self.assertEqual(fiat_sell.amount, "0.01")
+        self.assertEqual(fiat_sell.secondary_amount, "500")
+
+    def test_binance_discover_symbols_from_balances(self) -> None:
+        connector = BinanceLiveConnector("key", "secret", "Binance")
+
+        def fake_signed_get(base, path, params=None):
+            self.assertEqual(path, "/api/v3/account")
+            return {"balances": [{"asset": "SOL", "free": "1.5", "locked": "0"}, {"asset": "USDT", "free": "0", "locked": "0"}]}
+
+        connector._signed_get = fake_signed_get  # type: ignore[method-assign]
+        symbols = connector._discover_symbols()
+        self.assertIn("SOLUSDT", symbols)
+        self.assertIn("SOLUSDC", symbols)
+        self.assertTrue(all(not s.startswith("USDT") for s in symbols), "USDT has zero balance, shouldn't be a base asset")
+
     def test_legacy_bitget_import_preserves_evidence_fields(self) -> None:
         connector = BitgetConnector()
         event = connector.normalize(

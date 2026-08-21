@@ -77,6 +77,22 @@ class NormalizedEvent:
     source_timezone: str | None = None
 
 
+@dataclass(frozen=True)
+class Balance:
+    """A live "how much do I actually have right now" snapshot for one
+    asset, straight from the source (an exchange balance endpoint, an
+    address's on-chain balance) — independent of the event ledger. Used only
+    for reconciliation: comparing this against the ledger-computed holding
+    for the same asset surfaces drift (a gap in event coverage, a
+    normalization bug) without treating the live number as the ledger
+    itself. Never used to fabricate history."""
+
+    asset_symbol: str
+    amount: str
+    asset_network: str | None = None
+    asset_contract: str | None = None
+
+
 class Connector(Protocol):
     source_id: str
     version: str
@@ -84,6 +100,12 @@ class Connector(Protocol):
     def fetch(self, since: datetime | None = None) -> Iterable[RawRecord]: ...
 
     def normalize(self, raw: RawRecord) -> NormalizedEvent: ...
+
+    # fetch_balances(self) -> Iterable[Balance] is deliberately NOT part of
+    # this Protocol: it's optional, source-by-source. Callers check for it
+    # with getattr(connector, "fetch_balances", None) — a source with no
+    # live balance concept, or one this app hasn't wired up yet, simply
+    # doesn't offer a reconciliation check.
 
 
 class ConnectorUnavailable(Exception):

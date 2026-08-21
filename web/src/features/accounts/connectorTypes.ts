@@ -13,15 +13,17 @@ export const CONNECTOR_TYPES: ConnectorTypeMeta[] = [
   { id: "evm_address", label: "EVM wallet", hint: "MetaMask, Rabby — Ethereum, L2s & BNB Smart Chain", glyph: "Ξ" },
   { id: "solana_address", label: "Solana", hint: "Phantom — native SOL transfers", glyph: "◎" },
   { id: "monero_rpc", label: "Monero", hint: "Your own monero-wallet-rpc", glyph: "ɱ" },
-  { id: "lightning_node", label: "Lightning", hint: "Your own LND node", glyph: "⚡" },
+  { id: "lightning_node", label: "Lightning", hint: "Any NWC wallet (ZEUS, Alby Hub, …) or your own LND node", glyph: "⚡" },
   { id: "manual", label: "Manual / other", hint: "No live sync — track by hand", glyph: "•" },
 ];
 
-// Metadata for the two connector_type values only reachable via the
-// exchange form's "live" mode — not shown in the top-level type picker.
-const LIVE_EXCHANGE_META: Record<string, ConnectorTypeMeta> = {
+// Metadata for connector_type values only reachable via a nested mode
+// toggle inside another type's form (exchange live-mode, Lightning's NWC
+// vs LND-node choice) — not shown in the top-level type picker itself.
+const NESTED_CONNECTOR_META: Record<string, ConnectorTypeMeta> = {
   bitget_live: { id: "bitget_live", label: "Bitget (live)", hint: "Live API key", glyph: "EX" },
   binance_live: { id: "binance_live", label: "Binance (live)", hint: "Live API key", glyph: "EX" },
+  lightning_nwc: { id: "lightning_nwc", label: "Lightning (NWC)", hint: "Nostr Wallet Connect", glyph: "⚡" },
 };
 
 export const EVM_CHAINS: { id: string; label: string }[] = [
@@ -34,7 +36,7 @@ export const EVM_CHAINS: { id: string; label: string }[] = [
 ];
 
 export function connectorTypeMeta(id: string): ConnectorTypeMeta {
-  return CONNECTOR_TYPES.find((c) => c.id === id) ?? LIVE_EXCHANGE_META[id] ?? CONNECTOR_TYPES[CONNECTOR_TYPES.length - 1];
+  return CONNECTOR_TYPES.find((c) => c.id === id) ?? NESTED_CONNECTOR_META[id] ?? CONNECTOR_TYPES[CONNECTOR_TYPES.length - 1];
 }
 
 export function connectorSummary(account: {
@@ -55,6 +57,7 @@ export function connectorSummary(account: {
   if (connector_type === "solana_address" && address) return truncateMiddle(address);
   if (connector_type === "monero_rpc") return "monero-wallet-rpc";
   if (connector_type === "lightning_node") return "LND node";
+  if (connector_type === "lightning_nwc") return account.has_config ? "NWC connection stored" : "No NWC connection yet";
   if (connector_type === "bitget_live") return account.has_config ? "Live API key connected" : "No API key yet";
   if (connector_type === "binance_live") return account.has_config ? "Live API key connected" : "No API key yet";
   return null;

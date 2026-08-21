@@ -11,17 +11,64 @@ from typing import Iterable
 
 import httpx
 
-from app.connectors.base import ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
+from app.connectors.base import Balance, ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
 
 BASE_URL = "https://api.bitget.com"
 
-# Bitget's V2 API. Read-only endpoints only — this connector never signs a
-# trade or withdrawal request (plan §81/§30). Core spot endpoints (fills,
-# deposits, withdrawals) are well-exercised; margin/futures/earn use the
-# same V2 surface but are lower-traffic paths for this connector, so each
-# product category is fetched independently — a permission error or
-# endpoint drift on one (e.g. a key without futures access) degrades that
-# category to "nothing pulled this round" rather than breaking the rest.
+# Bitget's V2 "Classic Account" API. Read-only endpoints only — this
+# connector never signs a trade or withdrawal request (plan §81/§30). Core
+# spot endpoints (fills, deposits, withdrawals) are well-exercised;
+# margin/futures/earn use the same V2 surface but are lower-traffic paths
+# for this connector, so each product category is fetched independently —
+# a permission error or endpoint drift on one (e.g. a key without futures
+# access) degrades that category to "nothing pulled this round" rather
+# than breaking the rest.
+#
+# Bitget has since introduced Unified Trading Accounts (UTA): an account
+# migrated to UTA mode rejects every classic V2 endpoint above with API
+# error 40085 ("You are in Unified Account mode, and the Classic Account
+# API is not supported at this time") — it isn't a permission issue, it's a
+# completely separate endpoint family (V3, same host + auth scheme). Mode
+# is auto-detected per sync (a fresh connector is built each run, so it
+# can't be cached across syncs) by probing the classic endpoint first and
+# switching to V3 only on a confirmed 40085; any other error still raises
+# normally so a real credential/network problem isn't misread as "must be
+# UTA". V3 endpoints require an explicit startTime/endTime window (max 90
+# days of history, ≤30 days per call), so UTA fetches are paginated in
+# 30-day windows via cursor.
+_UTA_WINDOW_MS = 30 * 24 * 3600 * 1000
+_UTA_LOOKBACK_MS = 90 * 24 * 3600 * 1000
+
+# financial-records is a broad, noisy ledger — it includes one entry per
+# order fill (ORDER_DEALT_IN/OUT, OPEN_LONG, CLOSE_SHORT, ...) which would
+# duplicate what /api/v3/trade/fills already yields as BUY/SELL. Only the
+# types below (transfers, interest, funding fees, liquidation, margin
+# borrow/repay) aren't already covered by fills, so only these are mapped;
+# everything else is skipped rather than guessed (avoids double-counting).
+_UTA_FINANCIAL_TYPE_MAP = {
+    "TRANSFER_IN": ("TRANSFER", "+"),
+    "TRANSFER_OUT": ("TRANSFER", "-"),
+    "INTEREST_SETTLEMENT_OUT": ("FUNDING_PAYMENT", "-"),
+    "CONTRACT_MAIN_SETTLE_FEE_USER_IN": ("FUNDING_PAYMENT", "+"),
+    "CONTRACT_MAIN_SETTLE_FEE_USER_OUT": ("FUNDING_PAYMENT", "-"),
+    "BURST_CLOSE_LONG": ("LIQUIDATION", "-"),
+    "BURST_CLOSE_SHORT": ("LIQUIDATION", "-"),
+    "BURST_BUY_SSM": ("LIQUIDATION", "-"),
+    "BURST_SELL_SSM": ("LIQUIDATION", "-"),
+    "BORROW": ("MARGIN_BORROW", "+"),
+    "REPAYMENT": ("MARGIN_REPAY", "-"),
+    "INTEREST_REPAYMENT": ("MARGIN_REPAY", "-"),
+}
+
+
+class BitgetApiError(ConnectorUnavailable):
+    """A Bitget API call returned a non-success `code`. Carries the code
+    separately from the message so callers (mode detection) can react to a
+    specific code like 40085 instead of substring-matching the text."""
+
+    def __init__(self, code, msg):
+        super().__init__(f"Bitget API error {code}: {msg}")
+        self.code = str(code)
 
 
 class BitgetLiveConnector:
@@ -32,10 +79,20 @@ class BitgetLiveConnector:
         self.api_secret = api_secret
         self.passphrase = passphrase
         self.account_label = account_label
+        self.mode: str | None = None  # "classic" | "uta", detected lazily
 
     @property
     def version(self) -> str:
-        return "bitget-live-0.3"
+        return "bitget-live-0.4"
+
+    @property
+    def history_limit_note(self) -> str | None:
+        """Surfaced by sync_account() after a backfill — a real, unavoidable
+        API limit (not something more pagination fixes), so the user should
+        know why history stops there rather than assume the sync is broken."""
+        if self.mode == "uta":
+            return "Bitget's Unified Account API only exposes the last 90 days of history — anything older isn't retrievable through this connection."
+        return None
 
     def _sign(self, timestamp: str, method: str, request_path: str, body: str = "") -> str:
         prehash = f"{timestamp}{method.upper()}{request_path}{body}"
@@ -63,7 +120,7 @@ class BitgetLiveConnector:
         except ValueError as exc:
             raise ConnectorUnavailable(f"Bitget returned a non-JSON response (HTTP {response.status_code})") from exc
         if str(data.get("code")) not in ("0", "00000"):
-            raise ConnectorUnavailable(f"Bitget API error {data.get('code')}: {data.get('msg')}")
+            raise BitgetApiError(data.get("code"), data.get("msg"))
         return data.get("data") or []
 
     def _get_optional(self, path: str, params: dict | None = None) -> list[dict]:
@@ -75,11 +132,126 @@ class BitgetLiveConnector:
         except ConnectorUnavailable:
             return []
 
+    def _detect_mode(self) -> None:
+        try:
+            self._get("/api/v2/spot/account/info")
+            self.mode = "classic"
+        except BitgetApiError as exc:
+            if exc.code != "40085":
+                raise
+            self.mode = "uta"
+
     def test_connection(self) -> bool:
-        self._get("/api/v2/spot/account/info")
+        if self.mode is None:
+            self._detect_mode()
+            return True
+        if self.mode == "uta":
+            self._get("/api/v3/account/info")
+        else:
+            self._get("/api/v2/spot/account/info")
         return True
 
+    # -- UTA (V3) pagination helpers -----------------------------------
+
+    def _v3_page(self, path: str, params: dict) -> tuple[list[dict], str | None]:
+        data = self._get(path, params)
+        if isinstance(data, dict):
+            return list(data.get("list") or []), data.get("cursor")
+        if isinstance(data, list):
+            return data, None
+        return [], None
+
+    def _v3_paged(self, path: str, params: dict) -> Iterable[dict]:
+        cursor: str | None = None
+        while True:
+            page_params = dict(params)
+            if cursor:
+                page_params["cursor"] = cursor
+            items, cursor = self._v3_page(path, page_params)
+            yield from items
+            if not cursor or not items:
+                break
+
+    def _v3_windowed(self, path: str, params: dict, start_ms: int, end_ms: int, *, optional: bool = False) -> Iterable[dict]:
+        """Page through a V3 endpoint across ≤30-day windows spanning
+        [start_ms, end_ms). `optional=True` degrades a failure on any window
+        to "nothing further from this endpoint" instead of aborting fetch()."""
+        window_start = start_ms
+        while window_start < end_ms:
+            window_end = min(window_start + _UTA_WINDOW_MS, end_ms)
+            page_params = {**params, "startTime": str(window_start), "endTime": str(window_end), "limit": "100"}
+            try:
+                yield from self._v3_paged(path, page_params)
+            except ConnectorUnavailable:
+                if optional:
+                    return
+                raise
+            window_start = window_end
+
     def fetch(self, since: datetime | None = None) -> Iterable[RawRecord]:
+        if self.mode is None:
+            self._detect_mode()
+        if self.mode == "uta":
+            yield from self._fetch_uta(since)
+        else:
+            yield from self._fetch_classic(since)
+
+    def _fetch_uta(self, since: datetime | None = None) -> Iterable[RawRecord]:
+        now_ms = int(time.time() * 1000)
+        start_ms = int(since.timestamp() * 1000) if since is not None else now_ms - _UTA_LOOKBACK_MS
+        start_ms = max(start_ms, now_ms - _UTA_LOOKBACK_MS)  # 90-day hard API limit
+        end_ms = now_ms
+
+        for category in ("SPOT", "MARGIN"):
+            for fill in self._v3_windowed("/api/v3/trade/fills", {"category": category}, start_ms, end_ms, optional=(category != "SPOT")):
+                payload = {**fill, "_kind": "uta_fill", "_category": category}
+                yield RawRecord(self.source_id, f"uta-fill-{fill.get('execId')}", _ms(fill.get("createdTime")), payload)
+
+        for record in self._v3_windowed("/api/v3/account/deposit-records", {}, start_ms, end_ms):
+            payload = {**record, "_kind": "uta_deposit"}
+            record_id = record.get("recordId") or record.get("orderId")
+            yield RawRecord(self.source_id, f"uta-deposit-{record_id}", _ms(record.get("createdTime")), payload)
+
+        for record in self._v3_windowed("/api/v3/account/withdrawal-records", {}, start_ms, end_ms):
+            payload = {**record, "_kind": "uta_withdrawal"}
+            record_id = record.get("recordId") or record.get("orderId")
+            yield RawRecord(self.source_id, f"uta-withdrawal-{record_id}", _ms(record.get("createdTime")), payload)
+
+        for category in ("SPOT", "MARGIN", "USDT-FUTURES", "COIN-FUTURES", "USDC-FUTURES", "OTHER"):
+            for record in self._v3_windowed("/api/v3/account/financial-records", {"category": category}, start_ms, end_ms, optional=True):
+                if record.get("type") not in _UTA_FINANCIAL_TYPE_MAP:
+                    continue
+                payload = {**record, "_kind": "uta_financial", "_category": category}
+                yield RawRecord(self.source_id, f"uta-financial-{record.get('id')}", _ms(record.get("ts")), payload)
+
+        for record in self._v3_windowed("/api/v3/account/convert-records", {}, start_ms, end_ms, optional=True):
+            payload = {**record, "_kind": "uta_convert"}
+            key = f"{record.get('ts')}-{record.get('fromCoin')}-{record.get('toCoin')}"
+            yield RawRecord(self.source_id, f"uta-convert-{key}", _ms(record.get("ts")), payload)
+
+    def fetch_balances(self) -> Iterable[Balance]:
+        if self.mode is None:
+            self._detect_mode()
+        if self.mode == "uta":
+            data = self._get("/api/v3/account/assets")
+            assets = data.get("assets", []) if isinstance(data, dict) else []
+            return [
+                Balance(str(a.get("coin", "")).upper(), str(a.get("balance", "0")))
+                for a in assets
+                if _positive_amount(a.get("balance"))
+            ]
+        records = self._get("/api/v2/spot/account/assets")
+        balances: list[Balance] = []
+        for record in records:
+            try:
+                total = Decimal(str(record.get("available", "0"))) + Decimal(str(record.get("frozen", "0"))) + Decimal(str(record.get("locked", "0")))
+            except (InvalidOperation, ValueError):
+                continue
+            if total > 0:
+                balances.append(Balance(str(record.get("coin", "")).upper(), format(total, "f")))
+        return balances
+
+    def _fetch_classic(self, since: datetime | None = None) -> Iterable[RawRecord]:
         params: dict = {"limit": "100"}
         if since is not None:
             params["startTime"] = str(int(since.timestamp() * 1000))
@@ -238,6 +410,88 @@ class BitgetLiveConnector:
                 order_id=payload.get("orderId"),
             )
 
+        if kind == "uta_fill":
+            side = str(payload.get("side", "buy")).lower()
+            base_asset, detected_quote_asset = _pair_assets(payload.get("symbol", ""))
+            category = str(payload.get("_category", "")).lower()
+            return NormalizedEvent(
+                event_type="BUY" if side == "buy" else "SELL",
+                event_subtype=category or "spot",
+                direction="+" if side == "buy" else "-",
+                status="COMPLETE",
+                occurred_at=occurred_at,
+                original_timestamp=occurred_at.isoformat(),
+                asset_symbol=base_asset,
+                amount=str(payload.get("execQty", "0")),
+                source_label=self.account_label,
+                notes=f"Bitget {category or 'spot'} {side} · {payload.get('symbol')}",
+                fees=_uta_fill_fees(payload),
+                secondary_asset_symbol=detected_quote_asset,
+                secondary_amount=_positive_amount(payload.get("execValue")),
+                trade_id=payload.get("execId"),
+                order_id=payload.get("orderId"),
+            )
+
+        if kind in ("uta_deposit", "uta_withdrawal"):
+            is_deposit = kind == "uta_deposit"
+            on_chain = payload.get("dest") == "on_chain"
+            fees = []
+            if not is_deposit and payload.get("fee"):
+                fees.append(NormalizedFee(fee_type="EXCHANGE_FEE", asset_symbol=str(payload.get("coin", "")).upper(), amount=str(abs(float(payload["fee"])))))
+            return NormalizedEvent(
+                event_type="DEPOSIT" if is_deposit else "WITHDRAWAL",
+                event_subtype="exchange",
+                direction="+" if is_deposit else "-",
+                status="COMPLETE" if payload.get("status") == "success" else "REQUIRES_REVIEW",
+                occurred_at=occurred_at,
+                original_timestamp=occurred_at.isoformat(),
+                asset_symbol=str(payload.get("coin", "")).upper(),
+                amount=str(payload.get("size", "0")),
+                source_label=self.account_label,
+                address_to=payload.get("toAddress"),
+                destination_label=payload.get("toAddress") if not is_deposit else None,
+                notes=f"Bitget {'deposit' if is_deposit else 'withdrawal'} · {payload.get('orderId')}",
+                fees=fees,
+                deposit_id=payload.get("orderId") if is_deposit else None,
+                withdrawal_id=payload.get("orderId") if not is_deposit else None,
+                # recordId is the on-chain tx hash only for on-chain moves;
+                # for an internal transfer it's just another order id.
+                tx_hash=payload.get("recordId") if on_chain else None,
+            )
+
+        if kind == "uta_financial":
+            event_type, direction = _UTA_FINANCIAL_TYPE_MAP[str(payload.get("type"))]
+            amount = _positive_amount(payload.get("amount")) or "0"
+            return NormalizedEvent(
+                event_type=event_type,
+                event_subtype=f"uta:{str(payload.get('_category', '')).lower()}",
+                direction=direction,
+                status="COMPLETE",
+                occurred_at=occurred_at,
+                original_timestamp=occurred_at.isoformat(),
+                asset_symbol=str(payload.get("coin", "")).upper(),
+                amount=amount,
+                source_label=self.account_label,
+                notes=f"Bitget {str(payload.get('type', '')).replace('_', ' ').lower()} · {payload.get('id', '')}",
+                order_id=payload.get("id"),
+            )
+
+        if kind == "uta_convert":
+            return NormalizedEvent(
+                event_type="BUY",
+                event_subtype="convert",
+                direction="+",
+                status="COMPLETE",
+                occurred_at=occurred_at,
+                original_timestamp=occurred_at.isoformat(),
+                asset_symbol=str(payload.get("toCoin", "")).upper(),
+                amount=str(payload.get("toCoinSize", "0")),
+                source_label=self.account_label,
+                notes=f"Bitget convert · {payload.get('fromCoin')} → {payload.get('toCoin')}",
+                secondary_asset_symbol=str(payload.get("fromCoin", "")).upper(),
+                secondary_amount=_positive_amount(payload.get("fromCoinSize")),
+            )
+
         # futures_bill: a generic account ledger entry. Bitget tags these
         # with a business type (`bizType` / `businessType` depending on
         # product) — map the ones we recognize, leave the rest as UNKNOWN
@@ -304,6 +558,19 @@ def _positive_amount(value) -> str | None:
     if amount == 0:
         return None
     return format(abs(amount), "f")
+
+
+def _uta_fill_fees(payload: dict) -> list[NormalizedFee]:
+    """V3 fills report fees as a flat list of {feeCoin, fee} — simpler than
+    the V2 feeDetail shapes _spot_fees has to normalize."""
+    fees: list[NormalizedFee] = []
+    for entry in payload.get("feeDetail") or []:
+        if not isinstance(entry, dict):
+            continue
+        amount = _positive_amount(entry.get("fee"))
+        if amount:
+            fees.append(NormalizedFee(fee_type="TRADING_FEE", asset_symbol=str(entry.get("feeCoin", "")).upper(), amount=amount))
+    return fees
 
 
 def _spot_fees(payload: dict) -> list[NormalizedFee]:

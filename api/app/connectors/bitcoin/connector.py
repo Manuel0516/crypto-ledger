@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Iterable
 
 import httpx
 
-from app.connectors.base import ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
+from app.connectors.base import Balance, ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
 
 from .hd import InvalidExtendedKey, derive_addresses
 
@@ -37,6 +38,15 @@ def _get_json(path: str) -> dict | list:
         return response.json()
     except httpx.HTTPError as exc:
         raise ConnectorUnavailable(f"Could not reach mempool.space: {exc}") from exc
+
+
+def _address_balance_btc(address: str) -> str:
+    data = _get_json(f"/address/{address}")
+    if not isinstance(data, dict):
+        return "0"
+    chain = data.get("chain_stats", {})
+    sats = chain.get("funded_txo_sum", 0) - chain.get("spent_txo_sum", 0)
+    return f"{sats / 1e8:.8f}"
 
 
 def _fetch_page(address: str, last_seen_txid: str | None) -> list[dict]:
@@ -156,6 +166,9 @@ class BitcoinAddressConnector:
         occurred_at = raw.source_timestamp or datetime.now(timezone.utc)
         return _tx_to_event(raw.payload, {self.address}, self.account_label, occurred_at)
 
+    def fetch_balances(self) -> Iterable[Balance]:
+        return [Balance("BTC", _address_balance_btc(self.address), asset_network="Bitcoin")]
+
 
 class BitcoinXpubConnector:
     """Watches an entire HD wallet from its public extended key (xpub/ypub/
@@ -242,3 +255,13 @@ class BitcoinXpubConnector:
     def normalize(self, raw: RawRecord) -> NormalizedEvent:
         occurred_at = raw.source_timestamp or datetime.now(timezone.utc)
         return _tx_to_event(raw.payload, self._own_addresses, self.account_label, occurred_at)
+
+    def fetch_balances(self) -> Iterable[Balance]:
+        try:
+            addresses = self._scan_chain(change=False, max_batches=self.MAX_BATCHES) + self._scan_chain(change=True, max_batches=self.MAX_BATCHES)
+        except InvalidExtendedKey as exc:
+            raise ConnectorUnavailable(str(exc)) from exc
+        total_sats = Decimal(0)
+        for address in addresses:
+            total_sats += Decimal(_address_balance_btc(address))
+        return [Balance("BTC", format(total_sats, "f"), asset_network="Bitcoin")]

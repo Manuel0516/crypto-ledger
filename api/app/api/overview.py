@@ -17,17 +17,38 @@ router = APIRouter(prefix="/api", tags=["overview"])
 def overview(session: Session = Depends(get_session)):
     settings = get_or_create_settings(session)
     display_currency = settings.display_currency
-    holdings: dict[int, Decimal] = {}
-    assets_by_id: dict[int, Asset] = {}
-    for event, asset in session.query(Event, Asset).join(Asset, Event.primary_asset_id == Asset.id):
-        if asset.asset_type == "FIAT":
-            continue
-        amount = Decimal(event.primary_amount) * (1 if event.direction == "+" else -1)
-        holdings[asset.id] = holdings.get(asset.id, Decimal(0)) + amount
-        assets_by_id[asset.id] = asset
+
+    events = session.query(Event).all()
+    asset_ids: set[int] = set()
+    for event in events:
+        asset_ids.add(event.primary_asset_id)
+        if event.secondary_asset_id is not None:
+            asset_ids.add(event.secondary_asset_id)
         for fee in event.fees:
-            if fee.fee_asset_id == asset.id:
-                holdings[asset.id] -= Decimal(fee.fee_amount)
+            asset_ids.add(fee.fee_asset_id)
+    assets_by_id: dict[int, Asset] = (
+        {a.id: a for a in session.query(Asset).filter(Asset.id.in_(asset_ids)).all()} if asset_ids else {}
+    )
+
+    holdings: dict[int, Decimal] = {}
+
+    def apply(asset_id: int, delta: Decimal) -> None:
+        asset = assets_by_id.get(asset_id)
+        if asset is None or asset.asset_type == "FIAT":
+            return
+        holdings[asset_id] = holdings.get(asset_id, Decimal(0)) + delta
+
+    for event in events:
+        apply(event.primary_asset_id, Decimal(event.primary_amount) * (1 if event.direction == "+" else -1))
+        for fee in event.fees:
+            apply(fee.fee_asset_id, -Decimal(fee.fee_amount))
+        # A trade's secondary leg (the quote asset given up or received —
+        # see NormalizedEvent.secondary_amount) moves holdings too, opposite
+        # the primary leg's direction. Without this, a BUY's quote-asset
+        # spend was never subtracted — that asset's holdings only ever grew.
+        if event.secondary_asset_id is not None and event.secondary_amount not in (None, ""):
+            secondary_direction = "-" if event.direction == "+" else "+"
+            apply(event.secondary_asset_id, Decimal(event.secondary_amount) * (1 if secondary_direction == "+" else -1))
 
     # A portfolio value is the current net position valued once per asset. It
     # must not be the sum of every historical transaction valuation.

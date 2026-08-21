@@ -119,7 +119,10 @@ export function OverviewPage({ onOpenEvent, navigate }: OverviewPageProps) {
             <div className="grid gap-3 sm:grid-cols-2">
               {(overview?.assets ?? []).map((asset) => (
                 <HoldingCard
-                  key={asset.symbol}
+                  // asset.id, not symbol: two Asset rows can share a symbol
+                  // (same coin tracked under different networks) — id is
+                  // the real unique key.
+                  key={asset.id}
                   asset={asset}
                   allocationPct={allocationOf(asset, holdingsTotal)}
                   flow24h={flowLabel(flows.get(asset.symbol), asset.symbol)}

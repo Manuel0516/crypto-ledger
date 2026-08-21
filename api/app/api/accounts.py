@@ -6,8 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.connectors.base import ConnectorUnavailable
 from app.connectors.evm.connector import CHAINS
-from app.core.ledger.sync import SYNCABLE_TYPES, sync_account
+from app.core.ledger.connectors import build_connector
+from app.core.ledger.reconcile import ReconcileResult, reconcile_account
+from app.core.ledger.sync import SYNCABLE_TYPES, SyncResult, sync_account
 from app.db.models import Account, Event
 from app.security.secrets import encrypt_config
 
@@ -24,6 +27,7 @@ _DEFAULT_KIND = {
     "solana_address": "wallet",
     "monero_rpc": "wallet",
     "lightning_node": "wallet",
+    "lightning_nwc": "wallet",
     "bitget_live": "exchange",
     "binance_live": "exchange",
 }
@@ -126,6 +130,36 @@ def edit_account(account_id: int, body: AccountEdit, session: Session = Depends(
     return _serialize(session, account)
 
 
+def _serialize_reconcile(result: ReconcileResult | None) -> dict | None:
+    if result is None:
+        return None
+    return {
+        "status": result.status,
+        "message": result.message,
+        "assets": [
+            {
+                "asset_symbol": a.asset_symbol,
+                "asset_network": a.asset_network,
+                "live_amount": a.live_amount,
+                "computed_amount": a.computed_amount,
+                "difference": a.difference,
+                "matches": a.matches,
+            }
+            for a in result.assets
+        ],
+    }
+
+
+def _serialize_sync(result: SyncResult) -> dict:
+    return {
+        "status": result.status,
+        "imported": result.imported,
+        "skipped": result.skipped,
+        "message": result.message,
+        "reconciliation": _serialize_reconcile(result.reconciliation),
+    }
+
+
 @router.post("/{account_id}/sync")
 def sync(account_id: int, session: Session = Depends(get_session)):
     account = session.get(Account, account_id)
@@ -136,7 +170,7 @@ def sync(account_id: int, session: Session = Depends(get_session)):
     if account.paused:
         raise HTTPException(400, "This source is paused — resume it before syncing")
     result = sync_account(session, account)
-    return {"status": result.status, "imported": result.imported, "skipped": result.skipped, "message": result.message}
+    return _serialize_sync(result)
 
 
 @router.post("/{account_id}/backfill")
@@ -151,7 +185,40 @@ def backfill(account_id: int, session: Session = Depends(get_session)):
     if account.paused:
         raise HTTPException(400, "This source is paused — resume it before syncing")
     result = sync_account(session, account, backfill=True)
-    return {"status": result.status, "imported": result.imported, "skipped": result.skipped, "message": result.message}
+    return _serialize_sync(result)
+
+
+@router.get("/{account_id}/reconcile")
+def reconcile(account_id: int, session: Session = Depends(get_session)):
+    """Compares a live balance pull (where the source supports one) against
+    what the ledger computes from ingested events. Read-only — never syncs,
+    never writes anything; a mismatch just gets flagged for the user."""
+    account = session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(404, "Account not found")
+    result = reconcile_account(session, account)
+    return _serialize_reconcile(result)
+
+
+@router.get("/{account_id}/nwc-permissions")
+def nwc_permissions(account_id: int, session: Session = Depends(get_session)):
+    """Live-queries an NWC connection's own reported permissions (NIP-47
+    get_info) — this app never uses payment-capable methods regardless of
+    what's granted; this endpoint exists only to show the user what their
+    connection actually allows, same info the sync-time check flags as an
+    Issue if it includes more than read access."""
+    account = session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(404, "Account not found")
+    connector = build_connector(account)
+    permissions_fn = getattr(connector, "permissions", None) if connector else None
+    if permissions_fn is None:
+        return {"status": "unsupported", "methods": [], "extra_methods": [], "message": "This source doesn't report NWC permissions."}
+    try:
+        result = permissions_fn()
+    except ConnectorUnavailable as exc:
+        return {"status": "unavailable", "methods": [], "extra_methods": [], "message": str(exc)}
+    return {"status": "ok", "methods": result.methods, "extra_methods": result.extra_methods, "message": None}
 
 
 @router.post("/{account_id}/pause")

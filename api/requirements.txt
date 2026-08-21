@@ -13,3 +13,4 @@ pycryptodome>=3.20,<4
 rp2>=1.7,<2
 pyexcel-ezodf>=0.3.4,<1
 fpdf2>=2.7,<3
+nostr-sdk>=0.45,<0.46

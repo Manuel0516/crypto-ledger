@@ -25,6 +25,19 @@ KNOWN_ASSETS: dict[str, dict[str, str | int | None]] = {
 }
 
 
+def resolve_network(symbol: str, network: str | None, contract_address: str | None = None) -> str | None:
+    """The same network-defaulting get_or_create_asset applies, without
+    creating anything. An explicit network (or any contract address) always
+    wins; otherwise a known native-chain symbol (BTC, ETH, ...) resolves to
+    its canonical network even when the source didn't specify one — an
+    exchange balance never carries a network, but the ledger's BTC deposit
+    from that same exchange still got tagged "Bitcoin" when it was ingested.
+    Used to key-match a live balance to the ledger asset it actually is."""
+    if network is not None or contract_address is not None:
+        return network
+    return KNOWN_ASSETS.get(symbol.upper(), {}).get("network")
+
+
 def get_or_create_asset(
     session: Session,
     symbol: str,

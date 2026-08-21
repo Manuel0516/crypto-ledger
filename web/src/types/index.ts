@@ -241,6 +241,7 @@ export type ConnectorType =
   | "solana_address"
   | "monero_rpc"
   | "lightning_node"
+  | "lightning_nwc"
   | "bitget_live"
   | "binance_live";
 
@@ -266,6 +267,29 @@ export interface SyncResult {
   status: "ok" | "unavailable" | "unsupported";
   imported: number;
   skipped: number;
+  message: string | null;
+  reconciliation: ReconcileResult | null;
+}
+
+export interface ReconciledAsset {
+  asset_symbol: string;
+  asset_network: string | null;
+  live_amount: string;
+  computed_amount: string;
+  difference: string;
+  matches: boolean;
+}
+
+export interface ReconcileResult {
+  status: "ok" | "unavailable" | "unsupported";
+  message: string | null;
+  assets: ReconciledAsset[];
+}
+
+export interface NWCPermissionsResult {
+  status: "ok" | "unavailable" | "unsupported";
+  methods: string[];
+  extra_methods: string[];
   message: string | null;
 }
 

@@ -5,7 +5,7 @@ from typing import Iterable
 
 import httpx
 
-from app.connectors.base import ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
+from app.connectors.base import Balance, ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
 
 # The existing chains use their public Blockscout Etherscan-compatible APIs.
 # Routescan provides the same Etherscan-compatible request shape for BNB Smart
@@ -43,7 +43,7 @@ class EVMAddressConnector:
     def version(self) -> str:
         return "evm-address-0.4"
 
-    def _get(self, base: str, params: dict) -> list[dict]:
+    def _get_raw(self, base: str, params: dict):
         try:
             response = httpx.get(base, params=params, timeout=15.0)
             response.raise_for_status()
@@ -52,7 +52,10 @@ class EVMAddressConnector:
             raise ConnectorUnavailable(f"Could not reach {base}: {exc}") from exc
         if data.get("message") not in ("OK", "No transactions found"):
             raise ConnectorUnavailable(f"Unexpected response from {base}: {data.get('message')}")
-        return data.get("result") or []
+        return data.get("result")
+
+    def _get(self, base: str, params: dict) -> list[dict]:
+        return self._get_raw(base, params) or []
 
     PAGE_SIZE = 50
     BACKFILL_PAGES = 5  # since=None (first sync) -> up to 250 records per action
@@ -104,6 +107,46 @@ class EVMAddressConnector:
             payload = {**tx, "_kind": "nft1155", "_network": network}
             external_id = f"{tx['hash']}-nft1155-{tx.get('contractAddress', '')}-{tx.get('tokenID', '')}"
             yield RawRecord(namespace, external_id, _timestamp(tx["timeStamp"]), payload)
+
+    def fetch_balances(self) -> Iterable[Balance]:
+        base, network = CHAINS[self.chain]
+        balances: list[Balance] = []
+
+        native_wei = self._get_raw(base, {"module": "account", "action": "balance", "address": self.address})
+        try:
+            native_amount = int(native_wei) / 1e18
+        except (TypeError, ValueError):
+            native_amount = 0
+        if native_amount:
+            balances.append(Balance(_native_symbol(network), f"{native_amount:.18f}", asset_network=network))
+
+        # "tokenlist" isn't universally supported across every Etherscan-
+        # compatible explorer (Routescan's BSC endpoint in particular) — a
+        # missing token list just means "no token balances reported", not a
+        # failed reconciliation; the native balance above still stands.
+        try:
+            tokens = self._get_raw(base, {"module": "account", "action": "tokenlist", "address": self.address}) or []
+        except ConnectorUnavailable:
+            tokens = []
+        for token in tokens if isinstance(tokens, list) else []:
+            if token.get("type") not in (None, "ERC-20"):
+                continue  # skip NFTs here — a quantity-of-1 balance isn't a meaningful reconciliation figure
+            try:
+                decimals = int(token.get("decimals") or 18)
+                raw_balance = int(token.get("balance", "0"))
+            except (TypeError, ValueError):
+                continue
+            if raw_balance == 0:
+                continue
+            balances.append(
+                Balance(
+                    token.get("symbol") or "UNKNOWN",
+                    f"{raw_balance / (10 ** decimals):.{min(decimals, 18)}f}",
+                    asset_network=network,
+                    asset_contract=token.get("contractAddress"),
+                )
+            )
+        return balances
 
     def normalize(self, raw: RawRecord) -> NormalizedEvent:
         payload = raw.payload

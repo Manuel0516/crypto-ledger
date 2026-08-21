@@ -10,20 +10,25 @@ from urllib.parse import urlencode
 
 import httpx
 
-from app.connectors.base import ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
+from app.connectors.base import Balance, ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
 
 BASE_URL = "https://api.binance.com"
 FUTURES_BASE_URL = "https://fapi.binance.com"
 
 # Binance's spot deposit/withdrawal history endpoints are symbol-agnostic
-# (read-only, no key permission beyond "Enable Reading" needed). Trade
-# history (myTrades) is per-symbol by design on Binance's side — there is no
-# "all trades" endpoint — so we only pull it for symbols the account
-# explicitly configures. Margin/earn/futures each need their own key
-# permission scope, so each is fetched independently: a key without
-# futures/margin enabled just contributes nothing for that category
-# instead of failing the whole sync. Anything genuinely unreachable turns
-# into ConnectorUnavailable rather than a guess (plan §81).
+# (read-only, no key permission beyond "Enable Reading" needed) and stay
+# mandatory (raise on failure) — a bad key/IP-restriction/permission issue on
+# these should still surface as a clear sync error rather than a quiet
+# zero-event sync. Trade history (myTrades) is per-symbol by design on
+# Binance's side — there is no "all trades" endpoint — so trades are pulled
+# both for symbols the account explicitly configures and for pairs guessed
+# from live balances (see _discover_symbols), with each symbol query optional
+# so one bad/nonexistent pair doesn't block the rest. Margin/earn/futures/
+# convert/fiat each need their own key permission scope, so each is fetched
+# independently: a key without that scope enabled just contributes nothing
+# for that category instead of failing the whole sync. Anything genuinely
+# unreachable on a mandatory call turns into ConnectorUnavailable rather than
+# a guess (plan §81).
 
 # Binance futures' income endpoint reports many entry types; only the ones
 # relevant to a personal ledger are mapped, everything else stays UNKNOWN
@@ -37,6 +42,27 @@ _INCOME_TYPE_MAP = {
     "COMMISSION_REBATE": "CASHBACK",
 }
 
+# Binance has no "all trades" endpoint, so myTrades still needs a symbol list —
+# but most retail users never fill in the (optional) "Trading pairs" field, and
+# a lot of real holdings never touch myTrades/deposit history at all (Convert,
+# Buy Crypto with card/bank). To actually "recognize" a user's coins we: (1)
+# auto-derive candidate symbols from their live balances so trades get pulled
+# even with an empty configured list, and (2) pull Convert and Buy-Crypto
+# history, which are common acquisition paths myTrades/deposits never see.
+# Kept to the 3 dominant quote assets and a capped, sorted asset list — an
+# account with many dust balances could otherwise fan out into hundreds of
+# per-symbol calls and trip Binance's request-weight rate limit.
+_QUOTE_CANDIDATES = ("USDT", "USDC", "BTC")
+_MAX_DISCOVERED_ASSETS = 30
+
+# Binance requires a bounded startTime/endTime window (max 30 days) per call
+# for convert history — but unlike Bitget's UTA API, Binance doesn't document
+# a hard total retention limit for it, so a deep backfill can chain windows
+# back several years instead of stopping at an artificial cutoff. ~36 windows
+# for a 3-year backfill is a modest number of extra calls.
+_CONVERT_WINDOW_MS = 30 * 24 * 3600 * 1000
+_CONVERT_BACKFILL_LOOKBACK_MS = 3 * 365 * 24 * 3600 * 1000
+
 
 class BinanceLiveConnector:
     source_id = "binance"
@@ -49,7 +75,7 @@ class BinanceLiveConnector:
 
     @property
     def version(self) -> str:
-        return "binance-live-0.3"
+        return "binance-live-0.4"
 
     def _signed_get(self, base: str, path: str, params: dict | None = None) -> dict | list:
         params = {**(params or {}), "timestamp": str(int(time.time() * 1000)), "recvWindow": "10000"}
@@ -71,9 +97,64 @@ class BinanceLiveConnector:
             return []
         return result if isinstance(result, list) else []
 
+    def _signed_get_optional_list(self, base: str, path: str, params: dict | None = None, *, list_key: str) -> list[dict]:
+        """Like _signed_get_optional, but for endpoints that wrap their array
+        in an envelope object (e.g. {"list": [...]} or {"data": [...]})
+        instead of returning a bare list."""
+        try:
+            result = self._signed_get(base, path, params)
+        except ConnectorUnavailable:
+            return []
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            return result.get(list_key) or []
+        return []
+
+    def _discover_symbols(self) -> list[str]:
+        """Guess trading pairs to query myTrades for from live balances, so
+        trade history still comes through when the account was connected
+        without filling in the (optional) "Trading pairs" field. A guessed
+        pair that doesn't exist on Binance just yields nothing for that pair
+        (fetch() queries it via _signed_get_optional)."""
+        try:
+            account = self._signed_get(BASE_URL, "/api/v3/account")
+        except ConnectorUnavailable:
+            return []
+        balances = account.get("balances") if isinstance(account, dict) else None
+        if not balances:
+            return []
+        held: set[str] = set()
+        for bal in balances:
+            try:
+                total = Decimal(str(bal.get("free", "0"))) + Decimal(str(bal.get("locked", "0")))
+            except (InvalidOperation, ValueError):
+                continue
+            if total > 0:
+                held.add(str(bal.get("asset", "")).upper())
+        return [
+            f"{asset}{quote}"
+            for asset in sorted(held)[:_MAX_DISCOVERED_ASSETS]
+            for quote in _QUOTE_CANDIDATES
+            if asset != quote
+        ]
+
     def test_connection(self) -> bool:
         self._signed_get(BASE_URL, "/api/v3/account")
         return True
+
+    def fetch_balances(self) -> Iterable[Balance]:
+        account = self._signed_get(BASE_URL, "/api/v3/account")
+        balances = account.get("balances", []) if isinstance(account, dict) else []
+        result: list[Balance] = []
+        for bal in balances:
+            try:
+                total = Decimal(str(bal.get("free", "0"))) + Decimal(str(bal.get("locked", "0")))
+            except (InvalidOperation, ValueError):
+                continue
+            if total > 0:
+                result.append(Balance(str(bal.get("asset", "")).upper(), format(total, "f")))
+        return result
 
     def fetch(self, since: datetime | None = None) -> Iterable[RawRecord]:
         params: dict = {"limit": "1000"}
@@ -90,14 +171,53 @@ class BinanceLiveConnector:
             payload = {**record, "_kind": "withdrawal"}
             yield RawRecord(self.source_id, f"withdrawal-{record.get('id')}", _seconds(record.get("applyTime")), payload)
 
-        for symbol in self.symbols:
+        configured_symbols = list(self.symbols)
+        auto_symbols = [s for s in self._discover_symbols() if s not in configured_symbols]
+        for symbol in configured_symbols + auto_symbols:
             trade_params = {"symbol": symbol, "limit": "1000"}
             if since is not None:
                 trade_params["startTime"] = str(int(since.timestamp() * 1000))
-            trades = self._signed_get(BASE_URL, "/api/v3/myTrades", trade_params)
-            for trade in trades if isinstance(trades, list) else []:
+            # Optional: an invalid/mistyped configured symbol, or a guessed
+            # pair that doesn't exist on Binance, should skip that symbol
+            # rather than aborting deposits/withdrawals/remaining symbols.
+            trades = self._signed_get_optional(BASE_URL, "/api/v3/myTrades", trade_params)
+            for trade in trades:
                 payload = {**trade, "_kind": "trade", "_symbol": symbol}
                 yield RawRecord(self.source_id, f"trade-{trade['id']}", _ms(trade.get("time")), payload)
+
+        # Convert (instant crypto-to-crypto swap) and Buy/Sell Crypto with
+        # fiat (card/bank) — common acquisition paths that never show up as a
+        # deposit or a myTrades fill, and a frequent reason coins go
+        # "unrecognized" for a newly-connected account.
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        conv_start_ms = int(since.timestamp() * 1000) if since is not None else now_ms - _CONVERT_BACKFILL_LOOKBACK_MS
+
+        window_start = conv_start_ms
+        while window_start < now_ms:
+            window_end = min(window_start + _CONVERT_WINDOW_MS, now_ms)
+            conv_params = {"startTime": str(window_start), "endTime": str(window_end), "limit": "1000"}
+            for record in self._signed_get_optional_list(BASE_URL, "/sapi/v1/convert/tradeFlow", conv_params, list_key="list"):
+                if str(record.get("orderStatus", "")).upper() != "SUCCESS":
+                    continue
+                payload = {**record, "_kind": "convert"}
+                yield RawRecord(self.source_id, f"convert-{record.get('orderId')}", _ms(record.get("createTime")), payload)
+            window_start = window_end
+
+        for transaction_type, kind in (("0", "fiat_buy"), ("1", "fiat_sell")):
+            page = 1
+            while page <= 20:
+                fiat_params = {"transactionType": transaction_type, "page": str(page), "rows": "100"}
+                items = self._signed_get_optional_list(BASE_URL, "/sapi/v1/fiat/payments", fiat_params, list_key="data")
+                if not items:
+                    break
+                for record in items:
+                    if str(record.get("status")) != "Completed":
+                        continue
+                    payload = {**record, "_kind": kind}
+                    yield RawRecord(self.source_id, f"{kind}-{record.get('orderNo')}", _ms(record.get("createTime")), payload)
+                if len(items) < 100:
+                    break
+                page += 1
 
         # Margin: classic loan/repay history endpoints.
         for record in self._signed_get_optional(BASE_URL, "/sapi/v1/margin/loan", params):
@@ -243,6 +363,59 @@ class BinanceLiveConnector:
                 notes=f"Binance Simple Earn ({kind.split('_')[1]})",
             )
 
+        if kind == "convert":
+            return NormalizedEvent(
+                event_type="BUY",
+                event_subtype="convert",
+                direction="+",
+                status="COMPLETE",
+                occurred_at=occurred_at,
+                original_timestamp=occurred_at.isoformat(),
+                asset_symbol=str(payload.get("toAsset", "")).upper(),
+                amount=str(payload.get("toAmount", "0")),
+                source_label=self.account_label,
+                notes=f"Binance convert · {payload.get('fromAsset')} → {payload.get('toAsset')}",
+                secondary_asset_symbol=str(payload.get("fromAsset", "")).upper(),
+                secondary_amount=_positive_amount(payload.get("fromAmount")),
+                order_id=str(payload.get("orderId")) if payload.get("orderId") is not None else None,
+            )
+
+        if kind == "fiat_buy":
+            return NormalizedEvent(
+                event_type="BUY",
+                event_subtype="fiat",
+                direction="+",
+                status="COMPLETE",
+                occurred_at=occurred_at,
+                original_timestamp=occurred_at.isoformat(),
+                asset_symbol=str(payload.get("cryptoCurrency", "")).upper(),
+                amount=str(payload.get("obtainAmount", "0")),
+                source_label=self.account_label,
+                notes=f"Binance buy crypto ({payload.get('paymentMethod', 'fiat')}) · {payload.get('orderNo', '')}",
+                fees=_fiat_fees(payload),
+                secondary_asset_symbol=str(payload.get("fiatCurrency", "")).upper(),
+                secondary_amount=_positive_amount(payload.get("sourceAmount")),
+                order_id=payload.get("orderNo"),
+            )
+
+        if kind == "fiat_sell":
+            return NormalizedEvent(
+                event_type="SELL",
+                event_subtype="fiat",
+                direction="-",
+                status="COMPLETE",
+                occurred_at=occurred_at,
+                original_timestamp=occurred_at.isoformat(),
+                asset_symbol=str(payload.get("cryptoCurrency", "")).upper(),
+                amount=str(payload.get("sourceAmount", "0")),
+                source_label=self.account_label,
+                notes=f"Binance sell crypto ({payload.get('paymentMethod', 'fiat')}) · {payload.get('orderNo', '')}",
+                fees=_fiat_fees(payload),
+                secondary_asset_symbol=str(payload.get("fiatCurrency", "")).upper(),
+                secondary_amount=_positive_amount(payload.get("obtainAmount")),
+                order_id=payload.get("orderNo"),
+            )
+
         if kind == "dividend":
             return NormalizedEvent(
                 event_type="AIRDROP",
@@ -315,3 +488,10 @@ def _positive_amount(value) -> str | None:
     if amount == 0:
         return None
     return format(abs(amount), "f")
+
+
+def _fiat_fees(payload: dict) -> list[NormalizedFee]:
+    amount = _positive_amount(payload.get("totalFee"))
+    if not amount:
+        return []
+    return [NormalizedFee(fee_type="EXCHANGE_FEE", asset_symbol=str(payload.get("fiatCurrency", "")).upper(), amount=amount)]
