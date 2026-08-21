@@ -146,6 +146,23 @@ class SyncReconciliationTests(unittest.TestCase):
             result = sync_account(self.session, account, backfill=False)
         self.assertIsNone(result.message)
 
+    def test_unexpected_connector_failure_becomes_retryable_sync_result(self) -> None:
+        account = self._account()
+        # The real API commits the account before starting its initial
+        # backfill. Mirror that transaction boundary so rollback can preserve
+        # the saved source while recording the failure Issue.
+        self.session.commit()
+        with patch("app.core.ledger.sync.build_connector", side_effect=RuntimeError("malformed Binance response")):
+            result = sync_account(self.session, account, backfill=True)
+
+        self.assertEqual(result.status, "unavailable")
+        self.assertIn("malformed Binance response", result.message or "")
+        saved_account = self.session.get(Account, account.id)
+        self.assertIsNotNone(saved_account)
+        self.assertEqual(saved_account.status, "error")
+        issue = self.session.query(Issue).filter(Issue.title.contains("sync failed unexpectedly")).one()
+        self.assertIn("malformed Binance response", issue.detail)
+
 
 if __name__ == "__main__":
     unittest.main()

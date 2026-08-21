@@ -33,7 +33,7 @@ export const EVM_CHAINS: { id: string; label: string }[] = [
   { id: "optimism", label: "Optimism" },
   { id: "base", label: "Base" },
   { id: "avalanche", label: "Avalanche C-Chain" },
-  { id: "bsc", label: "BNB Smart Chain (API key required)" },
+  { id: "bsc", label: "BNB Smart Chain" },
   { id: "custom", label: "Other EVM network" },
 ];
 

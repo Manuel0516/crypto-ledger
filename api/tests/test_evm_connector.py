@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,8 +12,8 @@ from fastapi import HTTPException
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.api.accounts import _validate_chain_network
-from app.connectors.base import RawRecord
-from app.connectors.evm.connector import CHAINS, EVMAddressConnector
+from app.connectors.base import ConnectorUnavailable, RawRecord
+from app.connectors.evm.connector import CHAINS, EVMAddressConnector, _DEFAULT_BSC_TOKEN_CONTRACTS
 from app.core.assets.registry import KNOWN_ASSETS
 
 
@@ -154,6 +155,19 @@ class EVMConnectorTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].payload["_kind"], "native")
 
+    def test_provider_error_includes_etherscan_result_detail_and_action(self) -> None:
+        # Etherscan places the actionable text in result; model that response
+        # directly because a generic NOTOK is not enough for a user to fix a
+        # rejected BSC key or rate-limited request.
+        def fake_error_get(url: str, *, params: dict, timeout: float) -> FakeResponse:
+            self.assertEqual(params["action"], "txlist")
+            response = FakeResponse("Invalid API Key", status="0", message="NOTOK")
+            return response
+
+        with patch("app.connectors.evm.connector.httpx.get", side_effect=fake_error_get):
+            with self.assertRaisesRegex(ConnectorUnavailable, r"txlist.*Invalid API Key"):
+                list(self.connector.fetch(since=OCCURRED_AT))
+
     def test_unsupported_optional_action_does_not_abort_native_history(self) -> None:
         tx = {
             "hash": "0xnative-optional-test",
@@ -250,10 +264,77 @@ class EVMConnectorTests(unittest.TestCase):
         with patch("app.connectors.evm.connector.httpx.get", side_effect=fake_get):
             self.assertEqual(list(connector.fetch(since=OCCURRED_AT)), [])
 
-    def test_bsc_without_key_explains_provider_requirement(self) -> None:
+    def test_bsc_without_key_tracks_common_tokens_by_default(self) -> None:
+        # Etherscan removed BSC from its free tier and no Blockscout instance
+        # indexes BSC — there's no free, keyless history API left for it at
+        # all, so a keyless BSC account no longer hard-fails; instead it
+        # automatically tracks a handful of common BEP-20 contracts (no
+        # configuration needed) plus a live native BNB balance.
         connector = EVMAddressConnector(ADDRESS, "BSC wallet", chain="bsc")
-        with self.assertRaisesRegex(Exception, "Etherscan API key"):
-            list(connector.fetch(since=OCCURRED_AT))
+        self.assertTrue(connector._bsc_public_rpc_mode())
+        self.assertEqual(connector._bsc_token_contracts(), list(_DEFAULT_BSC_TOKEN_CONTRACTS))
+        with patch("app.connectors.evm.connector.bsc_rpc.fetch_token_transfers", return_value=iter([])) as mocked:
+            self.assertEqual(list(connector.fetch(since=OCCURRED_AT)), [])
+        mocked.assert_called_once_with(ADDRESS, list(_DEFAULT_BSC_TOKEN_CONTRACTS), OCCURRED_AT)
+        self.assertIn("usdt, usdc, busd, btcb, eth, and wbnb", connector.history_limit_note.lower())
+
+    def test_bsc_without_key_adds_a_user_contract_on_top_of_the_defaults(self) -> None:
+        connector = EVMAddressConnector(ADDRESS, "BSC wallet", chain="bsc", config={"bsc_token_contracts": [OTHER_ADDRESS]})
+        fake_transfer = {
+            "from": OTHER_ADDRESS,
+            "to": ADDRESS,
+            "value": "1000000000000000000",
+            "contractAddress": OTHER_ADDRESS,
+            "hash": "0xabc",
+            "logIndex": "0",
+            "blockNumber": "123",
+            "tokenDecimal": "18",
+            "tokenSymbol": "TOKN",
+            "tokenName": "TOKN",
+            "timeStamp": "1787227200",
+        }
+        with patch("app.connectors.evm.connector.bsc_rpc.fetch_token_transfers", return_value=iter([fake_transfer])) as mocked:
+            records = list(connector.fetch(since=OCCURRED_AT))
+        mocked.assert_called_once_with(ADDRESS, [OTHER_ADDRESS, *_DEFAULT_BSC_TOKEN_CONTRACTS], OCCURRED_AT)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].payload["_kind"], "token")
+
+    def test_bsc_without_key_does_not_duplicate_a_default_the_user_also_listed(self) -> None:
+        default_contract = _DEFAULT_BSC_TOKEN_CONTRACTS[0]
+        # A checksummed address only mixes case in the hex digits, never in
+        # the "0x" prefix — this is the realistic shape of "the same
+        # contract, different casing" that dedup needs to handle.
+        differently_cased = "0x" + default_contract[2:].upper()
+        connector = EVMAddressConnector(ADDRESS, "BSC wallet", chain="bsc", config={"bsc_token_contracts": [differently_cased]})
+        contracts = connector._bsc_token_contracts()
+        self.assertEqual(len(contracts), len(_DEFAULT_BSC_TOKEN_CONTRACTS))
+        self.assertEqual(sum(1 for c in contracts if c.lower() == default_contract.lower()), 1)
+
+    def test_bsc_with_key_is_not_in_public_rpc_mode(self) -> None:
+        self.assertFalse(self.connector._bsc_public_rpc_mode())
+        self.assertIsNone(self.connector.history_limit_note)
+
+    def test_bsc_public_rpc_balances_use_native_lookup_and_configured_contracts(self) -> None:
+        connector = EVMAddressConnector(
+            ADDRESS, "BSC wallet", chain="bsc", config={"bsc_token_contracts": [OTHER_ADDRESS]}
+        )
+        with (
+            patch("app.connectors.evm.connector.bsc_rpc.native_balance", return_value=Decimal("1.5")),
+            patch("app.connectors.evm.connector.bsc_rpc.token_balance", return_value=(Decimal("42"), 18, "TOKN")),
+        ):
+            balances = list(connector.fetch_balances())
+        # 1 native + (OTHER_ADDRESS + every default contract), all mocked
+        # to the same fixed (amount, decimals, symbol) tuple.
+        self.assertEqual(len(balances), 1 + 1 + len(_DEFAULT_BSC_TOKEN_CONTRACTS))
+        native = next(b for b in balances if b.asset_symbol == "BNB")
+        token = next(b for b in balances if b.asset_contract == OTHER_ADDRESS)
+        self.assertEqual(native.amount, "1.500000000000000000")
+        self.assertEqual(token.asset_contract, OTHER_ADDRESS)
+
+    def test_bsc_public_rpc_mode_rejects_an_invalid_configured_contract(self) -> None:
+        connector = EVMAddressConnector(ADDRESS, "BSC wallet", chain="bsc", config={"bsc_token_contracts": ["not-an-address"]})
+        with self.assertRaises(ConnectorUnavailable):
+            list(connector.fetch_balances())
 
     def test_bsc_contract_call_records_bnb_gas(self) -> None:
         raw = RawRecord(

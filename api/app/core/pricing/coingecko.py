@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import httpx
 
@@ -19,6 +19,47 @@ class CoinGeckoProvider:
     def __init__(self, timeout: float = 10.0, api_key: str | None = None):
         self._timeout = timeout
         self._api_key = api_key
+
+    def fetch_current(self, provider_asset_ids: list[str], quote_currencies: list[str]) -> dict[str, dict[str, Decimal]]:
+        """Fetch live market prices for the Overview estimate.
+
+        Current portfolio pricing is intentionally separate from historical
+        event valuations: this result is display-only and is never persisted
+        as tax evidence.
+        """
+        ids = sorted({str(asset_id).strip() for asset_id in provider_asset_ids if str(asset_id).strip()})
+        currencies = sorted({str(currency).strip().lower() for currency in quote_currencies if str(currency).strip()})
+        if not ids or not currencies:
+            return {}
+
+        headers = {}
+        if self._api_key:
+            headers["x-cg-demo-api-key"] = self._api_key
+        try:
+            response = httpx.get(
+                f"{COINGECKO_BASE}/simple/price",
+                params={"ids": ",".join(ids), "vs_currencies": ",".join(currencies)},
+                headers=headers,
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, ValueError, TypeError):
+            return {}
+
+        result: dict[str, dict[str, Decimal]] = {}
+        for provider_asset_id, raw_prices in data.items() if isinstance(data, dict) else []:
+            if not isinstance(raw_prices, dict):
+                continue
+            prices: dict[str, Decimal] = {}
+            for currency, raw_price in raw_prices.items():
+                try:
+                    prices[str(currency).upper()] = Decimal(str(raw_price))
+                except (InvalidOperation, TypeError, ValueError):
+                    continue
+            if prices:
+                result[str(provider_asset_id)] = prices
+        return result
 
     def fetch_day(self, provider_asset_id: str, at: datetime, quote_currencies: list[str]) -> DayPrices | None:
         date_str = at.strftime("%d-%m-%Y")

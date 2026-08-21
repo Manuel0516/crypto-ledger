@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,6 +18,8 @@ from app.security.secrets import decrypt_config, encrypt_config
 from .deps import get_session
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
+
+_EVM_ADDRESS = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 # connector_type -> coarse UI grouping kind
 _DEFAULT_KIND = {
@@ -39,9 +42,17 @@ def _validate_chain_network(connector_type: str, chain_network: str | None) -> N
 
 
 def _validate_evm_config(chain_network: str | None, config: dict | None) -> None:
+    config = config or {}
+    if chain_network == "bsc":
+        contracts = config.get("bsc_token_contracts") or []
+        if isinstance(contracts, str):
+            contracts = [contracts]
+        invalid = [str(c).strip() for c in contracts if str(c).strip() and not _EVM_ADDRESS.fullmatch(str(c).strip())]
+        if invalid:
+            raise HTTPException(400, f"Invalid BEP-20 contract address: {invalid[0]}")
+        return
     if chain_network != "custom":
         return
-    config = config or {}
     chain_id = str(config.get("chain_id") or "").strip()
     network_name = str(config.get("network_name") or "").strip()
     if not chain_id.isdigit() or int(chain_id) <= 0:
@@ -61,8 +72,8 @@ def _serialize(session: Session, account: Account) -> dict:
             config = decrypt_config(account.config_encrypted)
             evm_config = {
                 key: config[key]
-                for key in ("chain_id", "network_name", "native_symbol", "explorer_api_url")
-                if config.get(key) not in (None, "")
+                for key in ("chain_id", "network_name", "native_symbol", "explorer_api_url", "bsc_token_contracts")
+                if config.get(key) not in (None, "", [])
             }
         except (RuntimeError, ValueError, TypeError):
             # The encrypted secret itself is never returned. A missing runtime

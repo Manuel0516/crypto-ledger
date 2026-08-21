@@ -18,7 +18,7 @@ from app.core.ledger.service import refresh_valuations
 from app.core.pricing.cache import get_historical_prices
 from app.core.pricing.coingecko import CoinGeckoProvider
 from app.core.pricing.provider import DayPrices, HistoricalPrice
-from app.db.models import Asset, Base, Event, Issue, PriceObservation
+from app.db.models import Asset, Base, Event, Issue, PriceObservation, Valuation
 
 OCCURRED_AT = datetime(2026, 8, 20, tzinfo=timezone.utc)
 
@@ -35,6 +35,16 @@ class _FakeProvider:
 
     def resolve_symbol(self, symbol):
         return self._resolved_id
+
+
+class _CurrentPriceProvider:
+    name = "Current fake"
+
+    def fetch_current(self, provider_asset_ids, quote_currencies):
+        return {
+            provider_asset_id: {currency: Decimal("100") for currency in quote_currencies}
+            for provider_asset_id in provider_asset_ids
+        }
 
 
 class _NoResolveProvider:
@@ -112,12 +122,41 @@ class AssetResolutionTests(unittest.TestCase):
             refresh_valuations(self.session, event, currencies=("EUR",))
 
         self.assertEqual(asset.coingecko_id, "cardano")
-        self.assertEqual(len(event.valuations), 1)
-        self.assertEqual(event.valuations[0].unit_price, "0.5")
+        valuations = self.session.query(Valuation).filter_by(event_id=event.id).all()
+        self.assertEqual(len(valuations), 1)
+        self.assertEqual(valuations[0].unit_price, "0.5")
         self.assertEqual(
             self.session.query(Issue).filter_by(event_id=event.id, title="Unknown asset — no price source", resolved=False).count(),
             0,
         )
+
+    def test_current_portfolio_price_is_separate_from_historical_event_price(self) -> None:
+        asset = Asset(symbol="BTC", name="Bitcoin", asset_type="COIN", coingecko_id="bitcoin")
+        self.session.add(asset)
+        self.session.flush()
+        event = _event(self.session, asset, amount="2")
+        self.session.add(
+            Valuation(
+                event_id=event.id,
+                quote_currency="EUR",
+                unit_price="10",
+                total_value="20",
+                requested_timestamp=OCCURRED_AT,
+                observation_timestamp=OCCURRED_AT,
+                provider="historical-test",
+                provider_asset_id="bitcoin",
+                method="DAILY_REFERENCE",
+            )
+        )
+        self.session.commit()
+
+        with patch("app.api.overview.configured_price_provider", return_value=_CurrentPriceProvider()):
+            from app.api.overview import overview
+
+            result = overview(self.session)
+
+        self.assertEqual(result["portfolio_eur"], 200.0)
+        self.assertEqual(result["assets"][0]["value_eur"], 200.0)
 
     def test_direct_fiat_execution_uses_exact_price_without_provider_lookup(self) -> None:
         asset = Asset(symbol="NEWCOIN", name="NEWCOIN", asset_type="COIN")

@@ -275,6 +275,7 @@ export interface Account {
     network_name?: string;
     native_symbol?: string;
     explorer_api_url?: string;
+    bsc_token_contracts?: string[];
   } | null;
   syncable: boolean;
   status: string;
@@ -320,6 +321,8 @@ export interface AppSettings {
   sync_interval_minutes: number;
   sync_enabled: boolean;
   display_currency: string;
+  minimum_activity_value: number;
+  minimum_activity_currency: string;
   valuation_currencies: string[];
   price_provider: string;
   price_provider_api_key_configured: boolean;

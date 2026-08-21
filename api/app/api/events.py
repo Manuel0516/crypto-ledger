@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import or_
+from sqlalchemy import Numeric, and_, cast, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.connectors.base import RawRecord
@@ -14,6 +14,7 @@ from app.connectors.manual import ManualConnector
 from app.core.assets.registry import get_or_create_asset
 from app.core.ledger.overrides import EDITABLE_FIELDS, apply_override, effective_values, restore_automatic_value
 from app.core.ledger.service import ingest, refresh_valuations
+from app.core.settings import get_or_create_settings
 from app.db.models import Account, Asset, Event, EventLink, Fee, Issue, Override, RawEvent, Valuation
 
 from .deps import get_session
@@ -147,9 +148,26 @@ def list_events(
     session: Session = Depends(get_session),
 ):
     """Query the unified ledger server-side; never load the entire history in the browser."""
+    settings = get_or_create_settings(session)
     account_names = {name for (name,) in session.query(Account.name).all()}
     open_issue_ids = {eid for (eid,) in session.query(Issue.event_id).filter(Issue.resolved.is_(False), Issue.event_id.isnot(None))}
     query = session.query(Event).join(Event.primary_asset).outerjoin(Event.raw_event)
+    # This is a presentation filter only. The canonical event, raw evidence,
+    # exports and tax calculations remain untouched. Unpriced events stay
+    # visible because hiding an event with missing valuation data would turn a
+    # pricing problem into silent data loss.
+    try:
+        minimum_value = Decimal(str(settings.minimum_activity_value))
+    except (InvalidOperation, TypeError, ValueError):
+        minimum_value = Decimal("0.05")
+    if minimum_value > 0:
+        query = (
+            query.outerjoin(
+                Valuation,
+                and_(Valuation.event_id == Event.id, Valuation.quote_currency == settings.minimum_activity_currency),
+            )
+            .filter(or_(Valuation.id.is_(None), cast(Valuation.total_value, Numeric) >= minimum_value))
+        )
     if date_from:
         query = query.filter(Event.occurred_at >= date_from)
     if date_to:

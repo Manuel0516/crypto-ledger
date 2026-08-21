@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.connectors.base import ConnectorUnavailable, RawRecord
@@ -63,6 +65,30 @@ def _solana_tx(*, outgoing: bool = False, token: bool = False) -> dict:
 
 
 class ConnectorFieldCoverageTests(unittest.TestCase):
+    def test_binance_signed_error_envelope_surfaces_provider_code_and_message(self) -> None:
+        connector = BinanceLiveConnector("key", "secret", "Binance")
+
+        response = httpx.Response(
+            200,
+            json={"code": -2015, "msg": "Invalid API-key, IP, or permissions for action."},
+            request=httpx.Request("GET", "https://api.binance.com/api/v3/account"),
+        )
+        with patch("app.connectors.binance.live.httpx.get", return_value=response):
+            with self.assertRaisesRegex(ConnectorUnavailable, r"/api/v3/account.*-2015.*Invalid API-key"):
+                connector._signed_get("https://api.binance.com", "/api/v3/account")
+
+    def test_binance_signed_non_json_response_is_actionable(self) -> None:
+        connector = BinanceLiveConnector("key", "secret", "Binance")
+
+        response = httpx.Response(
+            200,
+            content=b"upstream returned HTML",
+            request=httpx.Request("GET", "https://api.binance.com/api/v3/account"),
+        )
+        with patch("app.connectors.binance.live.httpx.get", return_value=response):
+            with self.assertRaisesRegex(ConnectorUnavailable, r"non-JSON response.*account"):
+                connector._signed_get("https://api.binance.com", "/api/v3/account")
+
     def test_lightning_all_event_kinds_keep_their_structured_evidence(self) -> None:
         connector = LightningConnector("http://lnd", "00", "Lightning")
         cases = [

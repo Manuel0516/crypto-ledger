@@ -413,6 +413,7 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
   const [nativeSymbol, setNativeSymbol] = useState(account.evm_config?.native_symbol ?? "ETH");
   const [explorerApiUrl, setExplorerApiUrl] = useState(account.evm_config?.explorer_api_url ?? "");
   const [explorerApiKey, setExplorerApiKey] = useState("");
+  const [bscTokenContracts, setBscTokenContracts] = useState((account.evm_config?.bsc_token_contracts ?? []).join("\n"));
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -442,8 +443,15 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
             explorer_api_url: explorerApiUrl || undefined,
             explorer_api_key: explorerApiKey.trim() || undefined,
           };
-        } else if (chainNetwork === "bsc" && explorerApiKey.trim()) {
-          body.config = { explorer_api_key: explorerApiKey.trim() };
+        } else if (chainNetwork === "bsc") {
+          const contracts = bscTokenContracts
+            .split(/[\s,]+/)
+            .map((c) => c.trim())
+            .filter(Boolean);
+          const config: Record<string, unknown> = {};
+          if (explorerApiKey.trim()) config.explorer_api_key = explorerApiKey.trim();
+          config.bsc_token_contracts = contracts;
+          body.config = config;
         }
       }
       if (isLiveExchange && apiKey.trim() && apiSecret.trim()) {
@@ -502,9 +510,19 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
               </Select>
             </Field>
             {chainNetwork === "bsc" && (
-              <Field label="New Etherscan API key" htmlFor="edit-explorer-key" hint="Leave blank to keep the existing key.">
-                <Input id="edit-explorer-key" type="password" value={explorerApiKey} onChange={(e) => setExplorerApiKey(e.target.value)} placeholder="Unchanged" />
-              </Field>
+              <>
+                <Field
+                  label="Additional BEP-20 token contracts (optional)"
+                  htmlFor="edit-bsc-contracts"
+                  className="sm:col-span-2"
+                  hint="Native BNB and USDT, USDC, BUSD, BTCB, ETH, and WBNB are tracked automatically. List any other token's contract address here (one per line or comma-separated) to track it too."
+                >
+                  <Textarea id="edit-bsc-contracts" rows={2} value={bscTokenContracts} onChange={(e) => setBscTokenContracts(e.target.value)} placeholder="0x… (only needed for tokens beyond the defaults)" />
+                </Field>
+                <Field label="New Etherscan API key (optional)" htmlFor="edit-explorer-key" hint="Not required — BSC already works out of the box. Add a key only for native BNB history and automatic discovery of every token. Leave blank to keep the existing key, if any.">
+                  <Input id="edit-explorer-key" type="password" value={explorerApiKey} onChange={(e) => setExplorerApiKey(e.target.value)} placeholder="Unchanged" />
+                </Field>
+              </>
             )}
             {chainNetwork === "custom" && (
               <div className="grid gap-4 rounded-lg border border-line p-3.5 sm:col-span-2 sm:grid-cols-2">

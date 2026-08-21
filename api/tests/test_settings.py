@@ -32,6 +32,8 @@ class SettingsTests(unittest.TestCase):
     def test_defaults_are_safe_and_include_required_valuations(self) -> None:
         settings = get_or_create_settings(self.session)
         self.assertTrue(settings.sync_enabled)
+        self.assertEqual(settings.minimum_activity_value, "0.05")
+        self.assertEqual(settings.minimum_activity_currency, "EUR")
         self.assertEqual(valuation_currencies(settings), DEFAULT_VALUATION_CURRENCIES)
         self.assertEqual(settings.evidence_retention_policy, "indefinite")
 
@@ -49,6 +51,8 @@ class SettingsTests(unittest.TestCase):
                 price_timeout_seconds=20,
                 ui_theme="dark",
                 default_timezone="Europe/Stockholm",
+                minimum_activity_value="0.10",
+                minimum_activity_currency="USD",
             ),
             self.session,
         )
@@ -58,6 +62,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["display_currency"], "USD")
         self.assertEqual(result["backup_retention_monthly"], 24)
         self.assertEqual(result["ui_theme"], "dark")
+        self.assertEqual(result["minimum_activity_value"], 0.1)
+        self.assertEqual(result["minimum_activity_currency"], "USD")
 
     def test_required_valuation_currencies_cannot_be_removed(self) -> None:
         with self.assertRaises(ValidationError):

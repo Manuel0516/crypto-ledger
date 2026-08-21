@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -31,6 +32,8 @@ def _serialize(settings: AppSettings) -> dict:
         "sync_interval_minutes": settings.sync_interval_minutes,
         "sync_enabled": settings.sync_enabled,
         "display_currency": settings.display_currency,
+        "minimum_activity_value": float(settings.minimum_activity_value),
+        "minimum_activity_currency": settings.minimum_activity_currency,
         "valuation_currencies": list(valuation_currencies(settings)),
         "price_provider": settings.price_provider,
         "price_provider_api_key_configured": bool(settings.price_provider_api_key_encrypted),
@@ -73,6 +76,8 @@ class SettingsUpdate(BaseModel):
     sync_interval_minutes: int | None = Field(default=None, ge=1, le=43200)
     sync_enabled: bool | None = None
     display_currency: str | None = Field(default=None, min_length=3, max_length=3)
+    minimum_activity_value: Decimal | None = Field(default=None, ge=0, le=1000000)
+    minimum_activity_currency: str | None = Field(default=None, min_length=3, max_length=3)
     valuation_currencies: list[str] | None = Field(default=None, min_length=2, max_length=8)
     price_provider: str | None = None
     price_timeout_seconds: int | None = Field(default=None, ge=3, le=60)
@@ -93,6 +98,14 @@ class SettingsUpdate(BaseModel):
     @classmethod
     def validate_display_currency(cls, value: str | None) -> str | None:
         return value.strip().upper() if value else value
+
+    @field_validator("minimum_activity_currency")
+    @classmethod
+    def validate_minimum_activity_currency(cls, value: str | None) -> str | None:
+        value = value.strip().upper() if value else value
+        if value and not value.isalpha():
+            raise ValueError("Minimum activity currency must use letters only")
+        return value
 
     @field_validator("valuation_currencies")
     @classmethod
@@ -158,8 +171,16 @@ def update_settings(body: SettingsUpdate, session: Session = Depends(get_session
         settings.sync_enabled = body.sync_enabled
     if body.display_currency is not None:
         settings.display_currency = body.display_currency
+    if body.minimum_activity_value is not None:
+        settings.minimum_activity_value = format(body.minimum_activity_value, "f")
     if body.valuation_currencies is not None:
         settings.valuation_currencies_json = json.dumps(body.valuation_currencies)
+        if settings.minimum_activity_currency not in body.valuation_currencies:
+            settings.minimum_activity_currency = body.valuation_currencies[0]
+    if body.minimum_activity_currency is not None:
+        if body.minimum_activity_currency not in valuation_currencies(settings):
+            raise HTTPException(422, "Minimum activity currency must be one of the configured valuation currencies")
+        settings.minimum_activity_currency = body.minimum_activity_currency
     if body.price_provider is not None:
         settings.price_provider = body.price_provider
     if body.price_timeout_seconds is not None:

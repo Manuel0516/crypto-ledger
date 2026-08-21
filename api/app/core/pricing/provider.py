@@ -34,6 +34,10 @@ class HistoricalPrice:
 class PriceProvider(Protocol):
     name: str
 
+    def fetch_current(
+        self, provider_asset_ids: list[str], quote_currencies: list[str]
+    ) -> dict[str, dict[str, Decimal]]: ...
+
     def fetch_day(
         self, provider_asset_id: str, at: datetime, quote_currencies: list[str]
     ) -> DayPrices | None: ...

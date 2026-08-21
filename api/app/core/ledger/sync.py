@@ -104,14 +104,14 @@ def sync_account(session: Session, account: Account, *, backfill: bool = False) 
     """backfill=True pulls deeper history (first connection); backfill=False
     is the routine incremental check a background scheduler runs on a timer
     — cheap, and safe to repeat because raw evidence storage is idempotent."""
-    connector = build_connector(account)
-    if connector is None:
-        return SyncResult(
-            status="unsupported",
-            message="This source doesn't support automatic sync yet — use manual entries or a file import.",
-        )
-
     try:
+        connector = build_connector(account)
+        if connector is None:
+            return SyncResult(
+                status="unsupported",
+                message="This source doesn't support automatic sync yet — use manual entries or a file import.",
+            )
+
         since = None if backfill else account.last_sync
         imported = 0
         skipped = 0
@@ -157,3 +157,24 @@ def sync_account(session: Session, account: Account, *, backfill: bool = False) 
         )
         session.commit()
         return SyncResult(status="unavailable", message=str(exc))
+
+    except Exception as exc:
+        # Connector code handles expected provider failures as
+        # ConnectorUnavailable. Keep a malformed response or an unexpected
+        # provider/schema change from becoming a useless HTTP 500: preserve
+        # the account error state and return a message the UI can show and the
+        # user can act on or retry.
+        session.rollback()
+        account = session.get(Account, account.id) or account
+        account.status = "error"
+        detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        session.add(
+            Issue(
+                event_id=None,
+                severity="warning",
+                title=f"{account.name} sync failed unexpectedly",
+                detail=detail,
+            )
+        )
+        session.commit()
+        return SyncResult(status="unavailable", message=f"Sync failed unexpectedly: {detail}")

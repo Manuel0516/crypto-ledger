@@ -8,6 +8,7 @@ from typing import Iterable
 import httpx
 
 from app.connectors.base import Balance, ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
+from app.connectors.evm import bsc_rpc
 
 # An EVM address is not enough to identify a chain: the same 0x address can
 # exist on every EVM network. Keep built-in networks explicit and never map an
@@ -38,6 +39,21 @@ CHAIN_IDS: dict[str, str] = {
     "avalanche": "43114",
 }
 
+# Tracked automatically for every BSC account that isn't using an Etherscan
+# key (see EVMAddressConnector._bsc_token_contracts) — the handful of
+# BEP-20 tokens most BSC wallets actually hold, so a new account already
+# reports USDT/USDC/etc. without the user having to look up contract
+# addresses first. Each address was confirmed on-chain (symbol()/decimals()
+# read back as expected) before being hardcoded here.
+_DEFAULT_BSC_TOKEN_CONTRACTS: tuple[str, ...] = (
+    "0x55d398326f99059fF775485246999027B3197955",  # USDT (Binance-Peg BSC-USD)
+    "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",  # USDC
+    "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56",  # BUSD (Binance-Peg)
+    "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c",  # BTCB (Binance-Peg Bitcoin)
+    "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",  # ETH (Binance-Peg Ethereum)
+    "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",  # WBNB (Wrapped BNB — distinct from native BNB)
+)
+
 _CUSTOM_CHAIN = "custom"
 _ETH_ADDRESS = re.compile(r"^0x[a-fA-F0-9]{40}$")
 _OPTIONAL_ACTIONS = {"tokentx", "tokennfttx", "token1155tx", "tokenlist"}
@@ -64,7 +80,8 @@ class _ExplorerResponseError(ConnectorUnavailable):
     def __init__(self, base: str, action: str, message: str):
         self.action = action
         self.response_message = message
-        super().__init__(f"Unexpected response from {base}: {message}")
+        action_note = f" while requesting {action}" if action else ""
+        super().__init__(f"Unexpected response from {base}{action_note}: {message}")
 
 
 class EVMAddressConnector:
@@ -111,11 +128,34 @@ class EVMAddressConnector:
             )
 
         api_key = str(self.config.get("explorer_api_key") or "").strip() or None
-        if self.chain == "bsc" and not api_key:
-            raise ConnectorUnavailable(
-                "BNB Smart Chain history needs an Etherscan API key. Routescan does not index BSC; add the key in the source configuration."
-            )
         return base, network, chain_id, api_key, native_symbol
+
+    def _bsc_public_rpc_mode(self) -> bool:
+        """True when this account tracks BSC without an Etherscan key. There
+        is no free, keyless, indexed history API for BSC (Routescan doesn't
+        cover it; no Blockscout instance does either) — this mode falls
+        back to free public BSC RPC nodes instead: a live native BNB
+        balance always, plus real transfer history for the specific
+        BEP-20 contracts in _bsc_token_contracts() (see bsc_rpc.py). Native
+        BNB sends/receives and any token not in that list stay invisible —
+        a raw node has no per-address transaction index, only per-contract
+        log scanning."""
+        _base, _network, _chain_id, api_key, _native = self._network_config()
+        return self.chain == "bsc" and not api_key
+
+    def _bsc_token_contracts(self) -> list[str]:
+        """Contracts to track for a keyless BSC account: the common tokens
+        in _DEFAULT_BSC_TOKEN_CONTRACTS, plus anything the user added, so a
+        new account already tracks USDT/USDC/etc. without configuration."""
+        raw = self.config.get("bsc_token_contracts") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        contracts = [str(c).strip() for c in raw if str(c).strip()]
+        invalid = [c for c in contracts if not _ETH_ADDRESS.fullmatch(c)]
+        if invalid:
+            raise ConnectorUnavailable(f"Invalid BEP-20 contract address: {invalid[0]}")
+        seen = {c.lower() for c in contracts}
+        return contracts + [d for d in _DEFAULT_BSC_TOKEN_CONTRACTS if d.lower() not in seen]
 
     def _get_raw(self, base: str, params: dict):
         request_params = dict(params)
@@ -153,7 +193,17 @@ class EVMAddressConnector:
         if status in {"1", "ok"} or normalized_message == "ok":
             return result
 
-        raise _ExplorerResponseError(base, action, message or str(result) or f"status {status or 'unknown'}")
+        # Etherscan returns the generic ``NOTOK`` label in ``message`` and
+        # puts the useful diagnostic in ``result`` (for example ``Invalid API
+        # Key`` or ``Max rate limit reached``). Preserve that detail so a
+        # failed backfill tells the user what to fix instead of only saying
+        # that the provider rejected the request.
+        detail = str(result).strip() if isinstance(result, str) and result.strip() else ""
+        if not detail or (detail.lower() == normalized_message and message):
+            detail = message or str(result) or f"status {status or 'unknown'}"
+        elif message and normalized_message not in {"notok", detail.lower()}:
+            detail = f"{message}: {detail}"
+        raise _ExplorerResponseError(base, action, detail)
 
     def _get(self, base: str, params: dict) -> list[dict]:
         result = self._get_raw(base, params)
@@ -195,6 +245,18 @@ class EVMAddressConnector:
         base, network, _chain_id, _api_key, native_symbol = self._network_config()
         if not _ETH_ADDRESS.fullmatch(self.address):
             raise ConnectorUnavailable(f"Invalid EVM address '{self.address}'. Use a 0x-prefixed 40-hex-character address.")
+        if self._bsc_public_rpc_mode():
+            # Only history for contracts the user explicitly named is
+            # retrievable this way (see bsc_rpc) — native BNB transfers and
+            # any undeclared token are permanently invisible to this path,
+            # not a transient failure, so an account with no configured
+            # contracts correctly imports zero events every sync.
+            namespace = f"{self.source_id}:{self.chain}:{self.address}"
+            for tx in bsc_rpc.fetch_token_transfers(self.address, self._bsc_token_contracts(), since):
+                payload = {**tx, "_kind": "token", "_network": network, "_native_symbol": native_symbol}
+                external_id = f"{tx['hash']}-token-{tx.get('contractAddress', '')}-{tx.get('logIndex', '0')}"
+                yield RawRecord(namespace, external_id, _timestamp(tx["timeStamp"]), payload)
+            return
         namespace = f"{self.source_id}:{self.chain}:{self.address}"
         pages = self.BACKFILL_PAGES if since is None else 1
 
@@ -228,6 +290,8 @@ class EVMAddressConnector:
         base, network, _chain_id, _api_key, native_symbol = self._network_config()
         if not _ETH_ADDRESS.fullmatch(self.address):
             raise ConnectorUnavailable(f"Invalid EVM address '{self.address}'. Use a 0x-prefixed 40-hex-character address.")
+        if self._bsc_public_rpc_mode():
+            return self._fetch_bsc_public_rpc_balances(network, native_symbol)
         balances: list[Balance] = []
 
         native_wei = self._get_raw(base, {"module": "account", "action": "balance", "address": self.address})
@@ -266,6 +330,44 @@ class EVMAddressConnector:
                 )
             )
         return balances
+
+    def _fetch_bsc_public_rpc_balances(self, network: str, native_symbol: str) -> list[Balance]:
+        balances: list[Balance] = []
+        native_amount = bsc_rpc.native_balance(self.address)
+        if native_amount:
+            balances.append(Balance(native_symbol, f"{native_amount:.18f}", asset_network=network, asset_type="COIN"))
+
+        for contract in self._bsc_token_contracts():
+            amount, decimals, symbol = bsc_rpc.token_balance(self.address, contract)
+            if not amount:
+                continue
+            balances.append(
+                Balance(
+                    symbol or "UNKNOWN",
+                    f"{amount:.{min(decimals, 18)}f}",
+                    asset_network=network,
+                    asset_contract=contract,
+                    asset_type="TOKEN",
+                )
+            )
+        return balances
+
+    @property
+    def history_limit_note(self) -> str | None:
+        """Surfaced by sync_account() after a backfill (see Bitget/Binance
+        for the same convention) — this is a real, permanent property of a
+        BSC-without-a-key account, not a transient sync problem, so the
+        user should know the shape of what is and isn't covered rather
+        than assume the sync is broken."""
+        if self._bsc_public_rpc_mode():
+            return (
+                "This BNB Smart Chain account is tracking a live native BNB balance plus the last 90 days of "
+                "transfer history for USDT, USDC, BUSD, BTCB, ETH, and WBNB automatically, using free public BSC "
+                "nodes — add more BEP-20 contract addresses in this source's settings to track other tokens the "
+                "same way. Native BNB sends/receives can't be tracked this way (no free service indexes them), so "
+                "those won't appear in Activity."
+            )
+        return None
 
     def normalize(self, raw: RawRecord) -> NormalizedEvent:
         payload = raw.payload

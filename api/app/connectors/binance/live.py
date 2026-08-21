@@ -119,10 +119,30 @@ class BinanceLiveConnector:
         try:
             response = httpx.get(url, headers={"X-MBX-APIKEY": self.api_key}, timeout=15.0)
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+        except ValueError as exc:
+            raise ConnectorUnavailable(f"Binance returned a non-JSON response from {path}") from exc
         except httpx.HTTPError as exc:
             detail = exc.response.text if isinstance(exc, httpx.HTTPStatusError) else str(exc)
-            raise ConnectorUnavailable(f"Could not reach Binance: {detail}") from exc
+            status = f" (HTTP {exc.response.status_code})" if isinstance(exc, httpx.HTTPStatusError) else ""
+            raise ConnectorUnavailable(f"Binance request failed for {path}{status}: {detail}") from exc
+
+        # Binance reports many authentication, permission, timestamp and rate
+        # limit failures as HTTP 200 with a negative ``code``. Do not let an
+        # error envelope fall through as if it were valid history: mandatory
+        # calls must stop with the provider's actionable message, while the
+        # existing optional-call wrappers can still skip unsupported scopes.
+        if isinstance(result, dict):
+            code = result.get("code")
+            try:
+                numeric_code = int(code) if code is not None else None
+            except (TypeError, ValueError):
+                numeric_code = None
+            if numeric_code is not None and numeric_code < 0:
+                message = str(result.get("msg") or "unknown Binance error")
+                raise ConnectorUnavailable(f"Binance rejected {path} (code {numeric_code}): {message}")
+
+        return result
 
     def _signed_get_optional(self, base: str, path: str, params: dict | None = None) -> list[dict]:
         try:

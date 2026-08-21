@@ -343,6 +343,8 @@ class AppSettings(Base):
     sync_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
     sync_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     display_currency: Mapped[str] = mapped_column(String, nullable=False, default="EUR")
+    minimum_activity_value: Mapped[str] = mapped_column(String, nullable=False, default="0.05")
+    minimum_activity_currency: Mapped[str] = mapped_column(String, nullable=False, default="EUR")
     valuation_currencies_json: Mapped[str] = mapped_column(Text, nullable=False, default='["EUR", "SEK"]')
     price_provider: Mapped[str] = mapped_column(String, nullable=False, default="coingecko")
     price_provider_api_key_encrypted: Mapped[str | None] = mapped_column(Text)

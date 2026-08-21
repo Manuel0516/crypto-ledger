@@ -173,6 +173,7 @@ interface SourceForm {
   native_symbol: string;
   explorer_api_url: string;
   explorer_api_key: string;
+  bsc_token_contracts: string;
   address: string;
   host: string;
   port: string;
@@ -225,6 +226,7 @@ const EMPTY_FORM: SourceForm = {
   native_symbol: "ETH",
   explorer_api_url: "",
   explorer_api_key: "",
+  bsc_token_contracts: "",
   address: "",
   host: "127.0.0.1",
   port: "18082",
@@ -286,8 +288,15 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
             explorer_api_url: form.explorer_api_url || undefined,
             explorer_api_key: form.explorer_api_key.trim() || undefined,
           };
-        } else if (form.chain_network === "bsc" && form.explorer_api_key.trim()) {
-          body.config = { explorer_api_key: form.explorer_api_key.trim() };
+        } else if (form.chain_network === "bsc") {
+          const contracts = form.bsc_token_contracts
+            .split(/[\s,]+/)
+            .map((c) => c.trim())
+            .filter(Boolean);
+          const config: Record<string, unknown> = {};
+          if (form.explorer_api_key.trim()) config.explorer_api_key = form.explorer_api_key.trim();
+          if (contracts.length > 0) config.bsc_token_contracts = contracts;
+          if (Object.keys(config).length > 0) body.config = config;
         }
       }
       if (type === "monero_rpc") {
@@ -322,11 +331,11 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
         try {
           const result = await postJson<SyncResult>(`/api/accounts/${createdAccount.id}/backfill`, {});
           if (result.status !== "ok") {
-            setWarning(`Connected, but the initial backfill didn't finish: ${result.message ?? "unknown error"}. You can retry Backfill from Linked Accounts.`);
+            setWarning(`Account saved, but the initial backfill didn't finish: ${result.message ?? "unknown error"}. You can retry Backfill from Linked Accounts.`);
             return;
           }
         } catch (reason) {
-          setWarning(`Connected, but the initial backfill failed: ${reason instanceof Error ? reason.message : "unknown error"}. You can retry Backfill from Linked Accounts.`);
+          setWarning(`Account saved, but the initial backfill failed: ${reason instanceof Error ? reason.message : "unknown error"}. You can retry Backfill from Linked Accounts.`);
           return;
         }
       }
@@ -349,7 +358,7 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
             (form.exchange_provider !== "bitget" || form.passphrase.trim().length > 0)
           : true
         : type === "bitcoin_address" || type === "solana_address" || type === "evm_address"
-          ? form.address.trim().length > 0 && (type !== "evm_address" || (form.chain_network !== "custom" || (form.chain_id.trim().length > 0 && form.network_name.trim().length > 0)) && (form.chain_network !== "bsc" || form.explorer_api_key.trim().length > 0))
+          ? form.address.trim().length > 0 && (type !== "evm_address" || form.chain_network !== "custom" || (form.chain_id.trim().length > 0 && form.network_name.trim().length > 0))
           : type === "monero_rpc"
             ? form.host.trim().length > 0 && form.port.trim().length > 0
             : type === "lightning_node"
@@ -496,9 +505,30 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
                   </Select>
                 </Field>
                 {form.chain_network === "bsc" && (
-                  <Field label="Etherscan API key" htmlFor="acc-explorer-key" className="sm:col-span-2" hint="BSC is not indexed by Routescan. Create one Etherscan V2 key; it is encrypted before storage.">
-                    <Input id="acc-explorer-key" type="password" value={form.explorer_api_key} onChange={(e) => change("explorer_api_key", e.target.value)} placeholder="Etherscan API key" />
-                  </Field>
+                  <>
+                    <Field
+                      label="Additional BEP-20 token contracts (optional)"
+                      htmlFor="acc-bsc-contracts"
+                      className="sm:col-span-2"
+                      hint="Native BNB and USDT, USDC, BUSD, BTCB, ETH, and WBNB are tracked automatically. List any other token's contract address here (one per line or comma-separated) to track it too."
+                    >
+                      <Textarea
+                        id="acc-bsc-contracts"
+                        value={form.bsc_token_contracts}
+                        onChange={(e) => change("bsc_token_contracts", e.target.value)}
+                        placeholder="0x… (only needed for tokens beyond the defaults)"
+                        rows={2}
+                      />
+                    </Field>
+                    <Field
+                      label="Etherscan API key (optional)"
+                      htmlFor="acc-explorer-key"
+                      className="sm:col-span-2"
+                      hint="Not required — BSC already works out of the box. Add a key only if you also want native BNB transaction history and automatic discovery of every token, not just the ones listed above."
+                    >
+                      <Input id="acc-explorer-key" type="password" value={form.explorer_api_key} onChange={(e) => change("explorer_api_key", e.target.value)} placeholder="Etherscan API key" />
+                    </Field>
+                  </>
                 )}
                 {form.chain_network === "custom" && (
                   <div className="sm:col-span-2 grid gap-4 rounded-lg border border-line p-3.5 sm:grid-cols-2">

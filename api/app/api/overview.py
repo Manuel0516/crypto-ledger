@@ -5,6 +5,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.core.pricing.config import configured_price_provider
 from app.core.settings import get_or_create_settings
 from app.db.models import Account, AccountBalance, Asset, Event, Issue, SyncState, Valuation
 
@@ -116,12 +117,45 @@ def overview(session: Session = Depends(get_session)):
         key = (event.primary_asset_id, valuation.quote_currency)
         latest_prices.setdefault(key, Decimal(valuation.unit_price))
 
-    totals = {"EUR": Decimal(0), "SEK": Decimal(0), display_currency: Decimal(0)}
+    # Historical Valuation rows are event evidence and must not be reused as
+    # the current portfolio price. Fetch a separate live snapshot for the
+    # assets currently held; if the provider is unavailable, retain the most
+    # recent historical value as an explicitly best-effort fallback rather
+    # than making the whole Overview endpoint fail.
+    current_prices: dict[tuple[int, str], Decimal] = {}
+    provider_asset_ids = {
+        asset.coingecko_id
+        for asset_id, amount in holdings.items()
+        if amount != 0
+        for asset in [assets_by_id.get(asset_id)]
+        if asset is not None and asset.coingecko_id
+    }
+    if provider_asset_ids:
+        try:
+            current_by_provider = configured_price_provider(session).fetch_current(
+                list(provider_asset_ids),
+                list(dict.fromkeys(["EUR", "SEK", display_currency])),
+            )
+        except Exception:
+            current_by_provider = {}
+        for asset_id, amount in holdings.items():
+            if amount == 0:
+                continue
+            asset = assets_by_id.get(asset_id)
+            if asset is None or not asset.coingecko_id:
+                continue
+            for currency, price in current_by_provider.get(asset.coingecko_id, {}).items():
+                current_prices[(asset_id, currency.upper())] = Decimal(str(price))
+
+    totals = {currency: Decimal(0) for currency in ("EUR", "SEK", display_currency)}
     def holding_payload(asset_id: int, amount: Decimal) -> dict:
         asset = assets_by_id[asset_id]
-        eur_value = amount * latest_prices.get((asset_id, "EUR"), Decimal(0))
-        sek_value = amount * latest_prices.get((asset_id, "SEK"), Decimal(0))
-        display_value = amount * latest_prices.get((asset_id, display_currency), Decimal(0))
+        def price(currency: str) -> Decimal:
+            return current_prices.get((asset_id, currency), latest_prices.get((asset_id, currency), Decimal(0)))
+
+        eur_value = amount * price("EUR")
+        sek_value = amount * price("SEK")
+        display_value = amount * price(display_currency)
         return {
             "id": asset.id,
             "symbol": asset.symbol,
@@ -138,12 +172,17 @@ def overview(session: Session = Depends(get_session)):
 
     assets = []
     for asset_id, amount in holdings.items():
-        if amount == 0:
+        # Overview is a holdings view, not a liabilities view. Keep negative
+        # ledger balances available in Activity, reconciliation and reports,
+        # but do not present them as portfolio assets or subtract them from
+        # the headline total.
+        if amount <= 0:
             continue
         item = holding_payload(asset_id, amount)
         totals["EUR"] += Decimal(str(item["value_eur"]))
         totals["SEK"] += Decimal(str(item["value_sek"]))
-        totals[display_currency] += Decimal(str(item["value_display"]))
+        if display_currency not in {"EUR", "SEK"}:
+            totals[display_currency] += Decimal(str(item["value_display"]))
         assets.append(item)
 
     assets.sort(key=lambda item: item["value_display"], reverse=True)
@@ -153,7 +192,7 @@ def overview(session: Session = Depends(get_session)):
         balances = [
             holding_payload(asset_id, amount)
             for asset_id, amount in account_holdings.get(account.id, {}).items()
-            if amount != 0
+            if amount > 0
         ]
         balances.sort(key=lambda item: (item["value_display"], item["symbol"]), reverse=True)
         account_payloads.append(

@@ -11,7 +11,9 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.api.overview import overview
-from app.db.models import Account, AccountBalance, Asset, Base, Event
+from app.api.events import list_events
+from app.core.settings import get_or_create_settings
+from app.db.models import Account, AccountBalance, Asset, Base, Event, Valuation
 
 OCCURRED_AT = datetime(2026, 8, 20, tzinfo=timezone.utc)
 
@@ -102,6 +104,18 @@ class OverviewTests(unittest.TestCase):
         self.assertEqual(result["assets"], [])
         self.assertEqual(result["portfolio_eur"], 0.0)
 
+    def test_negative_balances_are_hidden_from_overview(self) -> None:
+        asset = Asset(symbol="USDT", name="Tether", asset_type="STABLECOIN")
+        self.session.add(asset)
+        self.session.flush()
+        self._event(None, asset, "1.0", direction="-")
+        self.session.commit()
+
+        result = overview(self.session)
+
+        self.assertEqual(result["assets"], [])
+        self.assertEqual(result["portfolio_eur"], 0.0)
+
     def test_live_and_computed_accounts_do_not_double_count_the_same_asset(self) -> None:
         live_account = self._account(live=True)
         computed_account = self._account(live=False)
@@ -173,6 +187,58 @@ class OverviewTests(unittest.TestCase):
 
         self.assertEqual(len(result["assets"]), 1)
         self.assertEqual(result["assets"][0]["amount"], 1.3)
+
+    def test_activity_filter_hides_tiny_priced_events_but_keeps_unpriced_events(self) -> None:
+        asset = Asset(symbol="BTC", name="Bitcoin", asset_type="COIN")
+        self.session.add(asset)
+        self.session.flush()
+        for external_id, amount, total_value in (("tiny", "0.001", "0.04"), ("normal", "0.002", "0.06")):
+            event = Event(
+                external_id=external_id,
+                event_type="RECEIVE",
+                direction="+",
+                status="COMPLETE",
+                occurred_at=OCCURRED_AT,
+                primary_asset_id=asset.id,
+                primary_amount=amount,
+                source_label="Test",
+                provenance="manual",
+                normalizer_version="test",
+            )
+            self.session.add(event)
+            self.session.flush()
+            self.session.add(
+                Valuation(
+                    event_id=event.id,
+                    quote_currency="EUR",
+                    unit_price=total_value,
+                    total_value=total_value,
+                    requested_timestamp=OCCURRED_AT,
+                    observation_timestamp=OCCURRED_AT,
+                    provider="test",
+                    provider_asset_id="btc",
+                    method="MANUAL",
+                )
+            )
+        unpriced = Event(
+            external_id="unpriced",
+            event_type="RECEIVE",
+            direction="+",
+            status="COMPLETE",
+            occurred_at=OCCURRED_AT,
+            primary_asset_id=asset.id,
+            primary_amount="0.003",
+            source_label="Test",
+            provenance="manual",
+            normalizer_version="test",
+        )
+        self.session.add(unpriced)
+        self.session.commit()
+
+        result = list_events(session=self.session, limit=50)
+
+        self.assertEqual(result["total"], 2)
+        self.assertEqual({item["id"] for item in result["items"]}, {2, 3})
 
 
 if __name__ == "__main__":

@@ -30,6 +30,8 @@ def reset_settings(settings: AppSettings) -> None:
     settings.sync_interval_minutes = 15
     settings.sync_enabled = True
     settings.display_currency = "EUR"
+    settings.minimum_activity_value = "0.05"
+    settings.minimum_activity_currency = "EUR"
     settings.valuation_currencies_json = json.dumps(DEFAULT_VALUATION_CURRENCIES)
     settings.price_provider = "coingecko"
     settings.price_provider_api_key_encrypted = None
