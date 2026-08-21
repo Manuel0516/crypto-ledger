@@ -12,7 +12,7 @@ from app.core.ledger.connectors import build_connector
 from app.core.ledger.reconcile import ReconcileResult, reconcile_account
 from app.core.ledger.sync import SYNCABLE_TYPES, SyncResult, sync_account
 from app.db.models import Account, Event
-from app.security.secrets import encrypt_config
+from app.security.secrets import decrypt_config, encrypt_config
 
 from .deps import get_session
 
@@ -34,12 +34,40 @@ _DEFAULT_KIND = {
 
 
 def _validate_chain_network(connector_type: str, chain_network: str | None) -> None:
-    if connector_type == "evm_address" and chain_network not in (None, *CHAINS):
+    if connector_type == "evm_address" and chain_network not in (None, *CHAINS, "custom"):
         raise HTTPException(400, f"Unknown EVM network '{chain_network}'")
+
+
+def _validate_evm_config(chain_network: str | None, config: dict | None) -> None:
+    if chain_network != "custom":
+        return
+    config = config or {}
+    chain_id = str(config.get("chain_id") or "").strip()
+    network_name = str(config.get("network_name") or "").strip()
+    if not chain_id.isdigit() or int(chain_id) <= 0:
+        raise HTTPException(400, "Custom EVM networks need a positive numeric chain ID")
+    if not network_name:
+        raise HTTPException(400, "Custom EVM networks need a network name")
+    explorer_url = str(config.get("explorer_api_url") or "").strip()
+    if explorer_url and not explorer_url.startswith(("https://", "http://")):
+        raise HTTPException(400, "The custom explorer API URL must start with http:// or https://")
 
 
 def _serialize(session: Session, account: Account) -> dict:
     event_count = session.query(Event).filter(Event.account_id == account.id).count()
+    evm_config = None
+    if account.connector_type == "evm_address" and account.config_encrypted:
+        try:
+            config = decrypt_config(account.config_encrypted)
+            evm_config = {
+                key: config[key]
+                for key in ("chain_id", "network_name", "native_symbol", "explorer_api_url")
+                if config.get(key) not in (None, "")
+            }
+        except (RuntimeError, ValueError, TypeError):
+            # The encrypted secret itself is never returned. A missing runtime
+            # key should not make the account list endpoint unusable.
+            evm_config = None
     return {
         "id": account.id,
         "name": account.name,
@@ -48,6 +76,7 @@ def _serialize(session: Session, account: Account) -> dict:
         "chain_network": account.chain_network,
         "address": account.address,
         "has_config": bool(account.config_encrypted),
+        "evm_config": evm_config,
         "syncable": account.connector_type in SYNCABLE_TYPES,
         "status": account.status,
         "wallet_software": account.wallet_software,
@@ -83,6 +112,8 @@ def create_account(body: NewAccount, session: Session = Depends(get_session)):
     if body.connector_type not in _DEFAULT_KIND:
         raise HTTPException(400, f"Unknown connector_type '{body.connector_type}'")
     _validate_chain_network(body.connector_type, body.chain_network)
+    if body.connector_type == "evm_address":
+        _validate_evm_config(body.chain_network or "ethereum", body.config)
     account = Account(
         name=body.name,
         kind=body.kind or _DEFAULT_KIND[body.connector_type],
@@ -114,6 +145,8 @@ def edit_account(account_id: int, body: AccountEdit, session: Session = Depends(
     if account is None:
         raise HTTPException(404, "Account not found")
     _validate_chain_network(account.connector_type, body.chain_network)
+    if account.connector_type == "evm_address" and body.chain_network is not None:
+        _validate_evm_config(body.chain_network, body.config)
     if body.name is not None:
         account.name = body.name
     if body.wallet_software is not None:
@@ -125,7 +158,15 @@ def edit_account(account_id: int, body: AccountEdit, session: Session = Depends(
     if body.address is not None:
         account.address = body.address or None
     if body.config is not None:
-        account.config_encrypted = encrypt_config(body.config) if body.config else None
+        if account.connector_type == "evm_address":
+            existing_config = decrypt_config(account.config_encrypted) if account.config_encrypted else {}
+            incoming_config = dict(body.config)
+            # Blank form fields must not erase an existing provider key.
+            if not incoming_config.get("explorer_api_key"):
+                incoming_config.pop("explorer_api_key", None)
+            account.config_encrypted = encrypt_config({**existing_config, **incoming_config}) if (existing_config or incoming_config) else None
+        else:
+            account.config_encrypted = encrypt_config(body.config) if body.config else None
     session.commit()
     return _serialize(session, account)
 
@@ -191,12 +232,15 @@ def backfill(account_id: int, session: Session = Depends(get_session)):
 @router.get("/{account_id}/reconcile")
 def reconcile(account_id: int, session: Session = Depends(get_session)):
     """Compares a live balance pull (where the source supports one) against
-    what the ledger computes from ingested events. Read-only — never syncs,
-    never writes anything; a mismatch just gets flagged for the user."""
+    what the ledger computes from ingested events. Never syncs and never
+    touches the event ledger; it does refresh this account's live-balance
+    snapshot (the number Overview shows), the same side effect a sync's
+    automatic reconciliation has."""
     account = session.get(Account, account_id)
     if account is None:
         raise HTTPException(404, "Account not found")
     result = reconcile_account(session, account)
+    session.commit()
     return _serialize_reconcile(result)
 
 

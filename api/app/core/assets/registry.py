@@ -21,6 +21,14 @@ KNOWN_ASSETS: dict[str, dict[str, str | int | None]] = {
     "XMR": {"name": "Monero", "asset_type": "COIN", "network": "Monero", "coingecko_id": "monero", "decimals": 12},
     "USDC": {"name": "USD Coin", "asset_type": "STABLECOIN", "network": "Ethereum", "coingecko_id": "usd-coin", "decimals": 6},
     "USDT": {"name": "Tether", "asset_type": "STABLECOIN", "network": "Ethereum", "coingecko_id": "tether", "decimals": 6},
+    "FDUSD": {"name": "First Digital USD", "asset_type": "STABLECOIN", "network": None, "coingecko_id": "first-digital-usd", "decimals": 18},
+    "BGB": {"name": "Bitget Token", "asset_type": "TOKEN", "network": None, "coingecko_id": "bitget-token", "decimals": 18},
+    # Receipt assets from Binance's staking products must be valued as their
+    # own instruments.  Treating BETH/WBETH/BNSOL as a bare ticker search can
+    # pick an unrelated token and corrupt historical tax valuations.
+    "BETH": {"name": "Binance ETH staking", "asset_type": "TOKEN", "network": None, "coingecko_id": "binance-eth-staking", "decimals": 18},
+    "WBETH": {"name": "Wrapped Beacon ETH", "asset_type": "TOKEN", "network": None, "coingecko_id": "wrapped-beacon-eth", "decimals": 18},
+    "BNSOL": {"name": "Binance Staked SOL", "asset_type": "TOKEN", "network": None, "coingecko_id": "binance-staked-sol", "decimals": 9},
     "UNI": {"name": "Uniswap", "asset_type": "COIN", "network": "Ethereum", "coingecko_id": "uniswap", "decimals": 18},
 }
 

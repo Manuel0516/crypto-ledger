@@ -91,6 +91,7 @@ class Balance:
     amount: str
     asset_network: str | None = None
     asset_contract: str | None = None
+    asset_type: str | None = None  # COIN | TOKEN | STABLECOIN | ...
 
 
 class Connector(Protocol):

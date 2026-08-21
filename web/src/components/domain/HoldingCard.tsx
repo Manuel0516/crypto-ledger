@@ -31,9 +31,15 @@ export function HoldingCard({ asset, allocationPct, flow24h }: HoldingCardProps)
         <AssetIcon symbol={asset.symbol} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-ink">{asset.name}</p>
-          <p className="mt-0.5 truncate text-[11px] font-mono text-soft">{asset.symbol}</p>
+          <p className="mt-0.5 truncate text-[11px] font-mono text-soft">
+            {asset.symbol}{asset.network ? ` · ${asset.network}` : ""}
+          </p>
         </div>
-        <Badge tone="neutral" className="shrink-0 tabular">{allocationPct}%</Badge>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {asset.asset_type === "NFT" && <Badge tone="accent">NFT</Badge>}
+          {asset.asset_type === "TOKEN" && <Badge tone="info">Token</Badge>}
+          <Badge tone="neutral" className="tabular">{allocationPct}%</Badge>
+        </div>
       </div>
 
       {history && history.points.length > 1 && (
@@ -47,12 +53,18 @@ export function HoldingCard({ asset, allocationPct, flow24h }: HoldingCardProps)
         </div>
 
         <div className="flex items-baseline justify-between gap-3">
-          <MoneyValue value={asset.value_display} currency={asset.display_currency} className="text-sm text-ink" />
-          <MoneyValue
-            value={asset.display_currency === "EUR" ? asset.value_sek : asset.value_eur}
-            currency={asset.display_currency === "EUR" ? "SEK" : "EUR"}
-            className="text-[11px] text-soft"
-          />
+          {asset.value_display > 0 ? (
+            <MoneyValue value={asset.value_display} currency={asset.display_currency} className="text-sm text-ink" />
+          ) : (
+            <span className="text-xs text-faint">No cached price</span>
+          )}
+          {asset.value_display > 0 && (
+            <MoneyValue
+              value={asset.display_currency === "EUR" ? asset.value_sek : asset.value_eur}
+              currency={asset.display_currency === "EUR" ? "SEK" : "EUR"}
+              className="text-[11px] text-soft"
+            />
+          )}
         </div>
       </div>
 

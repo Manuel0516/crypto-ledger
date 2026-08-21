@@ -22,13 +22,14 @@ from app.db.models import Base
 
 class ActivityAuditTests(unittest.TestCase):
     def setUp(self) -> None:
-        engine = create_engine("sqlite://")
-        Base.metadata.create_all(engine)
-        self.session = sessionmaker(bind=engine, expire_on_commit=False)()
+        self.engine = create_engine("sqlite://")
+        Base.metadata.create_all(self.engine)
+        self.session = sessionmaker(bind=self.engine, expire_on_commit=False)()
         self.connector = ManualConnector()
 
     def tearDown(self) -> None:
         self.session.close()
+        self.engine.dispose()
 
     def _event(self, external_id: str, *, event_type: str = "DEPOSIT", amount: str = "1"):
         event = ingest(

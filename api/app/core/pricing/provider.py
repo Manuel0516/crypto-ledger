@@ -14,6 +14,23 @@ class DayPrices:
     prices: dict[str, Decimal]  # quote_currency -> unit price
 
 
+@dataclass(frozen=True)
+class HistoricalPrice:
+    """One cached historical price with the precision the provider actually
+    supplied.  Iteration deliberately preserves the old ``(price, method)``
+    call-site shape while allowing valuation code to retain the observation
+    timestamp as evidence."""
+
+    unit_price: Decimal
+    method: str
+    observation_timestamp: datetime
+    granularity: str
+
+    def __iter__(self):
+        yield self.unit_price
+        yield self.method
+
+
 class PriceProvider(Protocol):
     name: str
 

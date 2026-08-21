@@ -13,8 +13,8 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.connectors.base import Balance, ConnectorUnavailable
-from app.core.ledger.reconcile import compute_account_holdings, reconcile_account
-from app.db.models import Account, Asset, Base, Event, Fee
+from app.core.ledger.reconcile import compute_account_holdings, reconcile_account, store_account_balances
+from app.db.models import Account, AccountBalance, Asset, Base, Event, Fee
 
 OCCURRED_AT = datetime(2026, 8, 20, tzinfo=timezone.utc)
 
@@ -226,6 +226,56 @@ class ReconcileTests(unittest.TestCase):
             result = reconcile_account(self.session, account)
         self.assertEqual(result.status, "unavailable")
         self.assertIn("could not reach exchange", result.message)
+
+    def test_successful_reconcile_stores_a_balance_snapshot_and_marks_the_account(self) -> None:
+        account = self._account()
+        self.assertIsNone(account.balance_synced_at)
+
+        with patch("app.core.ledger.reconcile.build_connector", return_value=_FakeConnector([Balance("BTC", "1.5")])):
+            reconcile_account(self.session, account)
+
+        self.assertIsNotNone(account.balance_synced_at)
+        rows = self.session.query(AccountBalance).filter_by(account_id=account.id).all()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].amount, "1.5")
+
+    def test_store_account_balances_removes_an_asset_no_longer_reported(self) -> None:
+        # Simulates a coin fully withdrawn from an exchange: the previous
+        # sync stored a row for it, this sync's live_balances no longer
+        # mentions it. The stale row must be deleted, not left behind as a
+        # phantom holding.
+        account = self._account()
+        btc = Asset(symbol="BTC", name="Bitcoin", asset_type="COIN", network="Bitcoin")
+        self.session.add(btc)
+        self.session.flush()
+        store_account_balances(self.session, account, [Balance("BTC", "1.0")])
+        self.session.commit()
+        self.assertEqual(self.session.query(AccountBalance).filter_by(account_id=account.id).count(), 1)
+
+        store_account_balances(self.session, account, [])
+        self.session.commit()
+
+        self.assertEqual(self.session.query(AccountBalance).filter_by(account_id=account.id).count(), 0)
+
+    def test_store_account_balances_updates_an_existing_row_in_place(self) -> None:
+        account = self._account()
+        store_account_balances(self.session, account, [Balance("BTC", "1.0")])
+        self.session.commit()
+
+        store_account_balances(self.session, account, [Balance("BTC", "2.5")])
+        self.session.commit()
+
+        rows = self.session.query(AccountBalance).filter_by(account_id=account.id).all()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].amount, "2.5")
+
+    def test_failed_reconcile_never_stores_a_balance_snapshot(self) -> None:
+        account = self._account()
+        with patch("app.core.ledger.reconcile.build_connector", return_value=_FailingConnector()):
+            reconcile_account(self.session, account)
+
+        self.assertIsNone(account.balance_synced_at)
+        self.assertEqual(self.session.query(AccountBalance).filter_by(account_id=account.id).count(), 0)
 
     def test_fiat_assets_are_excluded_from_computed_holdings(self) -> None:
         account = self._account()

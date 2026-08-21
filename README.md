@@ -2,7 +2,7 @@
 
 An evidence-first crypto portfolio, activity, reporting, and tax workspace. Crypto Ledger keeps a durable local ledger from connected exchanges, wallets, nodes, and manual entries, then lets you review, correct, export, back up, and report on that history without making a tax package the source of truth.
 
-> **Project status:** active development. The application is usable locally, but APIs, database migrations, tax integrations, and UI details may evolve before a stable release.
+> **Project status:** beta release candidate `v0.2.0-beta.1`. The application is usable locally and suitable for evaluation or self-hosted testing, but APIs, database migrations, tax integrations, and UI details may still evolve before a stable release.
 
 ## What it does
 
@@ -83,12 +83,18 @@ The current connector surface includes:
 
 - Bitget and Binance exchange accounts.
 - Bitcoin addresses.
-- EVM addresses across Ethereum, Arbitrum, Base, Polygon, Optimism, BNB Smart Chain, and configured EVM networks.
+- EVM addresses across Ethereum, Arbitrum, Base, Polygon, Optimism, Avalanche C-Chain, BNB Smart Chain, and configured EVM networks.
 - Solana addresses.
 - Manual activity and adjustment entries.
 - Wallet-software metadata such as MetaMask, Rabby, Cake, Exodus, and Phantom.
 
 Connector availability depends on credentials, network access, rate limits, and account permissions. Never provide a seed phrase or private key to a connector; the linked-account UI is designed around public addresses and read-only exchange access where possible.
+
+EVM sources keep the selected network separate from the address. Empty explorer responses such as “No token transfers found” are treated as a successful empty history. Avalanche uses Routescan’s indexed API. BNB Smart Chain is not indexed by Routescan, so it uses Etherscan V2 and requires an Etherscan API key, which is encrypted with the source configuration. Other EVM networks can be added with their chain ID and an Etherscan-compatible explorer endpoint.
+
+### Exchange history windows
+
+Private Bitget history APIs expose only a limited recent window, generally up to 90 days or three months depending on the product. Futures, account bills, financial records, Earn records, copy-trading transfers, and bot-related activity older than that window cannot be recovered by pressing Sync again. For older history, export the records or statements from Bitget and preserve them as evidence. The legacy Bitget import endpoint accepts a normalized JSON array with `id`, `type`, `timestamp`, `coin`, and `amount` fields; official CSV/PDF statements can also be retained as attachments or used to create reviewed manual entries. Exchange exports should be kept alongside the encrypted Crypto Ledger backup.
 
 ## Core data and audit model
 
@@ -111,9 +117,15 @@ cp .env.example .env
 docker compose up --build
 ```
 
+For a deployment, pass the public API origin at build time, for example:
+
+```bash
+VITE_API_URL=https://api.example.com docker compose build web
+```
+
 Open `http://localhost:5173`. The API is available at `http://localhost:8000` and its OpenAPI document at `http://localhost:8000/docs`.
 
-The default Compose configuration enables demo data. Set `DEMO_MODE=false` in `.env` before starting if you want an empty local workspace.
+The Compose web image is a production-style static build served by Nginx. The default Compose configuration enables demo data. Set `DEMO_MODE=false` in `.env` before starting if you want an empty local workspace, and set `VITE_API_URL` to the externally reachable API origin when the web client is not being opened on the same machine.
 
 ## Local development
 
@@ -134,7 +146,7 @@ In a second terminal:
 
 ```bash
 cd web
-npm install
+npm ci
 npm run dev
 ```
 
@@ -234,17 +246,29 @@ cd ../api
 
 The web build catches TypeScript and production-bundle issues. The API suite covers migrations, connectors, event workflows, reports, backups, settings, and tax integration behavior. Add focused tests with every connector, schema, or export change.
 
+For an isolated recovery/import smoke test that never touches the configured database, run:
+
+```bash
+api/.venv/bin/python scripts/verify_release.py
+```
+
+To upgrade a representative pre-release ledger fixture from the initial schema through the current head:
+
+```bash
+api/.venv/bin/python scripts/verify_migrations.py
+```
+
 ## Release checklist
 
-- [ ] Review `docs/Project-overview.md` and update this README when the product surface changes.
-- [ ] Confirm `.env` and local databases/backups are ignored and absent from the release archive.
-- [ ] Run the web build and API test suite.
-- [ ] Run a migration check against a fresh database and a copy of representative data.
-- [ ] Verify backup, download, archive verification, and restore flows.
+- [x] Review `docs/Project-overview.md` and update this README when the product surface changes.
+- [x] Confirm `.env` and local databases/backups are ignored and absent from the release archive.
+- [x] Run the web build and API test suite.
+- [x] Run a migration check against a fresh database and a representative persisted fixture (`scripts/verify_migrations.py`).
+- [x] Verify backup, download, archive verification, and restore flows (`scripts/verify_release.py`).
 - [ ] Review screenshots/videos for secrets, addresses, filesystem paths, and personal information.
-- [ ] Recheck all bundled third-party notices and licenses, especially optional RP2/plugin packages.
+- [x] Recheck all bundled third-party notices and licenses, especially optional RP2/plugin packages.
 - [ ] Set `DEMO_MODE=false` for a real deployment and configure secrets through the deployment environment or Settings.
-- [ ] Create release notes that call out schema, connector, tax, and backup compatibility.
+- [x] Create release notes that call out schema, connector, tax, and backup compatibility (`CHANGELOG.md`).
 
 ## Repository map
 

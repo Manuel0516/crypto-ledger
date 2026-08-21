@@ -408,6 +408,11 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
   const [note, setNote] = useState(account.note ?? "");
   const [address, setAddress] = useState(account.address ?? "");
   const [chainNetwork, setChainNetwork] = useState(account.chain_network ?? "ethereum");
+  const [chainId, setChainId] = useState(account.evm_config?.chain_id ?? "");
+  const [networkName, setNetworkName] = useState(account.evm_config?.network_name ?? "");
+  const [nativeSymbol, setNativeSymbol] = useState(account.evm_config?.native_symbol ?? "ETH");
+  const [explorerApiUrl, setExplorerApiUrl] = useState(account.evm_config?.explorer_api_url ?? "");
+  const [explorerApiKey, setExplorerApiKey] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -429,6 +434,17 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
       }
       if (account.connector_type === "evm_address") {
         body.chain_network = chainNetwork;
+        if (chainNetwork === "custom") {
+          body.config = {
+            chain_id: chainId,
+            network_name: networkName,
+            native_symbol: nativeSymbol,
+            explorer_api_url: explorerApiUrl || undefined,
+            explorer_api_key: explorerApiKey.trim() || undefined,
+          };
+        } else if (chainNetwork === "bsc" && explorerApiKey.trim()) {
+          body.config = { explorer_api_key: explorerApiKey.trim() };
+        }
       }
       if (isLiveExchange && apiKey.trim() && apiSecret.trim()) {
         body.config =
@@ -475,15 +491,41 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
           </Field>
         )}
         {account.connector_type === "evm_address" && (
-          <Field label="Network" htmlFor="edit-chain">
-            <Select id="edit-chain" value={chainNetwork} onChange={(e) => setChainNetwork(e.target.value)}>
-              {EVM_CHAINS.map((chain) => (
-                <option key={chain.id} value={chain.id}>
-                  {chain.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
+          <>
+            <Field label="Network" htmlFor="edit-chain">
+              <Select id="edit-chain" value={chainNetwork} onChange={(e) => setChainNetwork(e.target.value)}>
+                {EVM_CHAINS.map((chain) => (
+                  <option key={chain.id} value={chain.id}>
+                    {chain.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            {chainNetwork === "bsc" && (
+              <Field label="New Etherscan API key" htmlFor="edit-explorer-key" hint="Leave blank to keep the existing key.">
+                <Input id="edit-explorer-key" type="password" value={explorerApiKey} onChange={(e) => setExplorerApiKey(e.target.value)} placeholder="Unchanged" />
+              </Field>
+            )}
+            {chainNetwork === "custom" && (
+              <div className="grid gap-4 rounded-lg border border-line p-3.5 sm:col-span-2 sm:grid-cols-2">
+                <Field label="Chain ID" htmlFor="edit-chain-id">
+                  <Input id="edit-chain-id" inputMode="numeric" value={chainId} onChange={(e) => setChainId(e.target.value)} placeholder="43114" />
+                </Field>
+                <Field label="Network name" htmlFor="edit-network-name">
+                  <Input id="edit-network-name" value={networkName} onChange={(e) => setNetworkName(e.target.value)} placeholder="My EVM network" />
+                </Field>
+                <Field label="Native symbol" htmlFor="edit-native-symbol">
+                  <Input id="edit-native-symbol" value={nativeSymbol} onChange={(e) => setNativeSymbol(e.target.value.toUpperCase())} placeholder="ETH" />
+                </Field>
+                <Field label="Explorer API URL (optional)" htmlFor="edit-explorer-url">
+                  <Input id="edit-explorer-url" value={explorerApiUrl} onChange={(e) => setExplorerApiUrl(e.target.value)} placeholder="https://…/api" />
+                </Field>
+                <Field label="Explorer API key (optional)" htmlFor="edit-custom-explorer-key" className="sm:col-span-2">
+                  <Input id="edit-custom-explorer-key" type="password" value={explorerApiKey} onChange={(e) => setExplorerApiKey(e.target.value)} placeholder="Optional API key" />
+                </Field>
+              </div>
+            )}
+          </>
         )}
         {isLiveExchange && (
           <div className="space-y-4 rounded-lg border border-line p-3.5">

@@ -225,10 +225,12 @@ def get_event(event_id: int, session: Session = Depends(get_session)):
                 "total_value": v.total_value,
                 "provider": v.provider,
                 "method": v.method,
+                "granularity": v.granularity,
                 "confidence": v.confidence,
                 "manual_override": v.manual_override,
                 "requested_timestamp": v.requested_timestamp.isoformat(),
                 "observation_timestamp": v.observation_timestamp.isoformat(),
+                "fetched_at": v.fetched_at.isoformat(),
             }
             for v in event.valuations
         ],
@@ -419,6 +421,7 @@ def _upsert_valuation(session: Session, event: Event, currency: str, unit_price:
         existing.provider = "manual"
         existing.provider_asset_id = event.primary_asset.symbol
         existing.method = "MANUAL"
+        existing.granularity = "manual"
         existing.confidence = "manual"
         existing.manual_override = True
         valuation = existing
@@ -433,6 +436,7 @@ def _upsert_valuation(session: Session, event: Event, currency: str, unit_price:
             provider="manual",
             provider_asset_id=event.primary_asset.symbol,
             method="MANUAL",
+            granularity="manual",
             confidence="manual",
             manual_override=True,
         )

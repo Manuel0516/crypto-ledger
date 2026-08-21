@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session
 
-from app.connectors.base import ConnectorUnavailable
-from app.core.assets.registry import resolve_network
+from app.connectors.base import Balance, ConnectorUnavailable
+from app.core.assets.registry import get_or_create_asset, resolve_network
 from app.core.ledger.connectors import build_connector
-from app.db.models import Account, Asset, Event
+from app.db.models import Account, AccountBalance, Asset, Event
 
 # Two live balances rarely land on the exact same decimal as the
 # ledger-computed total — dust from fee rounding, an exchange truncating a
@@ -91,12 +92,49 @@ def compute_account_holdings(session: Session, account_id: int) -> dict[tuple[st
     return holdings
 
 
+def store_account_balances(session: Session, account: Account, live_balances: list[Balance]) -> None:
+    """Overwrites this account's live-balance snapshot (Overview's source of
+    truth for accounts that have one — see AccountBalance) with what was
+    just fetched. An asset present in the old snapshot but absent from
+    `live_balances` is deleted, not left behind — otherwise a coin that was
+    fully withdrawn/converted away would linger as a "phantom" holding
+    forever, which is the exact bug this snapshot exists to fix."""
+    seen_asset_ids: set[int] = set()
+    for balance in live_balances:
+        symbol = balance.asset_symbol.upper()
+        network = resolve_network(symbol, balance.asset_network, balance.asset_contract)
+        asset = get_or_create_asset(
+            session,
+            symbol,
+            network,
+            contract_address=balance.asset_contract,
+            asset_type=balance.asset_type,
+        )
+        seen_asset_ids.add(asset.id)
+        amount = format(_decimal(balance.amount), "f")
+        existing = session.query(AccountBalance).filter_by(account_id=account.id, asset_id=asset.id).one_or_none()
+        if existing is not None:
+            existing.amount = amount
+        else:
+            session.add(AccountBalance(account_id=account.id, asset_id=asset.id, amount=amount))
+
+    stale_query = session.query(AccountBalance).filter(AccountBalance.account_id == account.id)
+    if seen_asset_ids:
+        stale_query = stale_query.filter(~AccountBalance.asset_id.in_(seen_asset_ids))
+    for row in stale_query.all():
+        session.delete(row)
+
+    account.balance_synced_at = datetime.now(timezone.utc)
+
+
 def reconcile_account(session: Session, account: Account, connector=None) -> ReconcileResult:
     """Compare live balances (if the connector offers them) against what the
-    ledger computes for this account. Read-only: never touches the ledger or
-    ingests anything — a mismatch is surfaced for the user to investigate,
-    not auto-corrected (plan §48: raw evidence and the events derived from
-    it are never silently rewritten).
+    ledger computes for this account, and refresh this account's
+    AccountBalance snapshot (Overview's display source — see
+    store_account_balances) with what was just fetched. Never touches the
+    event ledger or ingests anything — a mismatch is surfaced for the user
+    to investigate, not auto-corrected (plan §48: raw evidence and the
+    events derived from it are never silently rewritten).
 
     Pass an already-built `connector` when the caller (sync_account) has one
     on hand — skips rebuilding it (re-decrypting config, re-detecting a
@@ -114,6 +152,8 @@ def reconcile_account(session: Session, account: Account, connector=None) -> Rec
         live_balances = list(fetch_balances())
     except ConnectorUnavailable as exc:
         return ReconcileResult(status="unavailable", assets=[], message=str(exc))
+
+    store_account_balances(session, account, live_balances)
 
     computed = compute_account_holdings(session, account.id)
     live_by_key: dict[tuple[str, str | None, str | None], Decimal] = {}

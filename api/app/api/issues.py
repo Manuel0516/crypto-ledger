@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.ledger.service import refresh_valuations
 from app.core.reconciliation.matcher import find_transfer_candidate
 from app.db.models import Event, EventLink, Issue
 
@@ -11,6 +12,11 @@ from .deps import get_session
 router = APIRouter(prefix="/api/issues", tags=["issues"])
 
 _TRANSFER_ISSUE_TITLE = "Possible internal transfer"
+# A price/asset lookup that failed at ingest time is never retried
+# automatically on a later sync (see refresh_valuations) — these are the
+# two issue titles a retry can actually resolve, since both come from the
+# pricing pipeline rather than a real, permanent data problem.
+_PRICING_ISSUE_TITLES = ("Unknown asset — no price source", "Missing price")
 
 
 @router.get("")
@@ -39,6 +45,37 @@ def resolve_issue(issue_id: int, session: Session = Depends(get_session)):
     issue.resolved = True
     session.commit()
     return {"id": issue.id, "resolved": True}
+
+
+@router.post("/retry-pricing")
+def retry_pricing_issues(session: Session = Depends(get_session)):
+    """Re-attempts every open "Unknown asset" / "Missing price" issue in one
+    pass. These are the two issue types that can go stale on their own: an
+    asset CoinGecko couldn't be resolved against at ingest time (see
+    CoinGeckoProvider.resolve_symbol) or a day CoinGecko had no price for
+    yet can both start working later without anything about the event
+    itself changing — but refresh_valuations only ever runs again for an
+    event when something about it is edited, so a fixable issue would
+    otherwise sit there forever. Safe to call any time: an event that still
+    can't be priced just keeps its existing issue, unchanged."""
+    issues = (
+        session.query(Issue)
+        .filter(Issue.title.in_(_PRICING_ISSUE_TITLES), Issue.resolved.is_(False), Issue.event_id.isnot(None))
+        .all()
+    )
+    event_ids = {i.event_id for i in issues}
+    events = session.query(Event).filter(Event.id.in_(event_ids)).all() if event_ids else []
+    for event in events:
+        refresh_valuations(session, event)
+    resolved = (
+        session.query(Issue)
+        .filter(Issue.title.in_(_PRICING_ISSUE_TITLES), Issue.event_id.in_(event_ids), Issue.resolved.is_(True))
+        .count()
+        if event_ids
+        else 0
+    )
+    session.commit()
+    return {"retried": len(events), "resolved": resolved}
 
 
 @router.post("/{issue_id}/link")

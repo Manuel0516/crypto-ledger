@@ -37,6 +37,12 @@ class Account(Base):
     # Sync/Backfill are refused too (plan §89's action list is Sync /
     # Backfill / Edit / Disable / Archive — five distinct actions).
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Set whenever this account's connector successfully completes a live
+    # balance check (fetch_balances()), even if the result is an empty list
+    # (a real zero balance) — distinct from "never checked" (None), so
+    # Overview can tell "confirmed empty" apart from "no live data yet,
+    # fall back to the computed ledger total" (see AccountBalance).
+    balance_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Asset(Base):
@@ -56,6 +62,35 @@ class Asset(Base):
     __table_args__ = (
         Index("ix_assets_network", "network"),
         UniqueConstraint("symbol", "network", "contract_address", name="uq_asset_symbol_network_contract"),
+    )
+
+
+class AccountBalance(Base):
+    """Latest live balance snapshot for one (account, asset) pair, from fetch_balances().
+
+    Overwritten in place on every successful balance check — this is a
+    current-state snapshot, not a history, so it stays outside the
+    append-only raw-evidence/event chain. Overview sums these (when present)
+    instead of the computed-from-events ledger total, per-account, so a
+    connected exchange/wallet shows what it actually reports right now
+    rather than a total that can drift from missed or misclassified events.
+    """
+
+    __tablename__ = "account_balances"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id"), nullable=False)
+    # Smallest-unit-precision decimal string, same convention as Event.primary_amount.
+    amount: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    account: Mapped[Account] = relationship(foreign_keys=[account_id])
+    asset: Mapped[Asset] = relationship(foreign_keys=[asset_id])
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "asset_id", name="uq_account_balance_account_asset"),
+        Index("ix_account_balances_account", "account_id"),
     )
 
 
@@ -229,6 +264,8 @@ class Valuation(Base):
     provider: Mapped[str] = mapped_column(String, nullable=False)
     provider_asset_id: Mapped[str] = mapped_column(String, nullable=False)
     method: Mapped[str] = mapped_column(String, nullable=False)  # EXACT_EXECUTION | DAILY_REFERENCE | MANUAL | ...
+    granularity: Mapped[str] = mapped_column(String, nullable=False, default="day")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     confidence: Mapped[str] = mapped_column(String, nullable=False, default="medium")
     manual_override: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -245,8 +282,10 @@ class PriceObservation(Base):
     provider_asset_id: Mapped[str] = mapped_column(String, nullable=False)
     quote_currency: Mapped[str] = mapped_column(String, nullable=False)
     observation_date: Mapped[str] = mapped_column(String, nullable=False)  # YYYY-MM-DD, provider's granularity
+    observation_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     unit_price: Mapped[str] = mapped_column(String, nullable=False)
     method: Mapped[str] = mapped_column(String, nullable=False)
+    granularity: Mapped[str] = mapped_column(String, nullable=False, default="day")
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (

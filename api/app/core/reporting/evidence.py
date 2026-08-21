@@ -68,9 +68,9 @@ def export_evidence_archive(session: Session, report_id: int | None = None) -> b
 
         prices = io.StringIO()
         price_writer = csv.writer(prices)
-        price_writer.writerow(["provider", "provider_asset_id", "quote_currency", "observation_date", "unit_price", "method", "fetched_at"])
+        price_writer.writerow(["provider", "provider_asset_id", "quote_currency", "observation_date", "observation_timestamp", "unit_price", "method", "granularity", "fetched_at"])
         for obs in session.query(PriceObservation).order_by(PriceObservation.observation_date).all():
-            price_writer.writerow([obs.provider, obs.provider_asset_id, obs.quote_currency, obs.observation_date, obs.unit_price, obs.method, obs.fetched_at.isoformat()])
+            price_writer.writerow([obs.provider, obs.provider_asset_id, obs.quote_currency, obs.observation_date, obs.observation_timestamp.isoformat() if obs.observation_timestamp else "", obs.unit_price, obs.method, obs.granularity, obs.fetched_at.isoformat()])
         archive.writestr("prices/observations.csv", prices.getvalue())
 
         accounts = io.StringIO()

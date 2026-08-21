@@ -120,7 +120,7 @@ async def lifespan(app: FastAPI):
         sync_task.cancel()
 
 
-app = FastAPI(title="Crypto Ledger API", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Crypto Ledger API", version="0.2.0-beta.1", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 for router_module in (overview, accounts, events, issues, reports, imports, backups, settings, tax, attachments, prices):

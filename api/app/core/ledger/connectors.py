@@ -24,7 +24,8 @@ def build_connector(account: Account):
             return BitcoinXpubConnector(address, account.name)
         return BitcoinAddressConnector(address, account.name)
     if account.connector_type == "evm_address":
-        return EVMAddressConnector(account.address, account.name, chain=account.chain_network or "ethereum")
+        config = decrypt_config(account.config_encrypted) if account.config_encrypted else {}
+        return EVMAddressConnector(account.address or "", account.name, chain=account.chain_network or "ethereum", config=config)
     if account.connector_type == "solana_address":
         return SolanaAddressConnector(account.address, account.name)
     if account.connector_type == "monero_rpc":

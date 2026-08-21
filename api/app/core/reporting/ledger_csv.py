@@ -32,6 +32,7 @@ FIELDNAMES = [
     "sek_value",
     "valuation_provider",
     "valuation_method",
+    "valuation_granularity",
     "tx_hash",
     "block_height",
     "order_id",
@@ -51,6 +52,7 @@ FIELDNAMES = [
     "linked_event_ids",
     "valuation_requested_timestamp",
     "valuation_observation_timestamp",
+    "valuation_fetched_at",
     "override_history",
     "notes",
 ]
@@ -96,6 +98,7 @@ def export_ledger_csv(session: Session) -> str:
                 "sek_value": valuations.get("SEK", ""),
                 "valuation_provider": valuation_provenance.provider if valuation_provenance else "",
                 "valuation_method": valuation_provenance.method if valuation_provenance else "",
+                "valuation_granularity": valuation_provenance.granularity if valuation_provenance else "",
                 "tx_hash": values["tx_hash"] or "",
                 "block_height": event.block_height if event.block_height is not None else "",
                 "order_id": values["order_id"] or "",
@@ -115,6 +118,7 @@ def export_ledger_csv(session: Session) -> str:
                 "linked_event_ids": "; ".join(str(event_id) for event_id in linked_event_ids),
                 "valuation_requested_timestamp": valuation_provenance.requested_timestamp.isoformat() if valuation_provenance else "",
                 "valuation_observation_timestamp": valuation_provenance.observation_timestamp.isoformat() if valuation_provenance else "",
+                "valuation_fetched_at": valuation_provenance.fetched_at.isoformat() if valuation_provenance else "",
                 "override_history": json.dumps([
                     {"field": override.field, "old": override.old_value, "new": override.new_value, "at": override.changed_at.isoformat(), "reason": override.reason}
                     for override in sorted(event.overrides, key=lambda override: override.id or 0)

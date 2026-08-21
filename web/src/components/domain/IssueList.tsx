@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertTriangle, CheckCircle2, Link2, ShieldAlert, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Link2, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
 import type { Issue } from "../../types";
 import { getJson, postJson } from "../../lib/api";
 import { useData } from "../../hooks/useData";
@@ -21,6 +21,8 @@ interface IssueListProps {
 
 export function IssueList({ onOpenEvent, onResolved }: IssueListProps) {
   const { data, loading, error, refresh } = useData<Issue[]>(() => getJson("/api/issues"), []);
+  const [retryingPricing, setRetryingPricing] = useState(false);
+  const [pricingError, setPricingError] = useState("");
 
   const resolve = async (issue: Issue) => {
     await postJson(`/api/issues/${issue.id}/resolve`, {});
@@ -32,6 +34,20 @@ export function IssueList({ onOpenEvent, onResolved }: IssueListProps) {
     await postJson(`/api/issues/${issue.id}/link`, {});
     await refresh();
     onResolved?.();
+  };
+
+  const retryPricing = async () => {
+    setRetryingPricing(true);
+    setPricingError("");
+    try {
+      await postJson("/api/issues/retry-pricing", {});
+      await refresh();
+      onResolved?.();
+    } catch (reason) {
+      setPricingError(reason instanceof Error ? reason.message : "Could not retry asset pricing");
+    } finally {
+      setRetryingPricing(false);
+    }
   };
 
   if (loading) {
@@ -55,8 +71,19 @@ export function IssueList({ onOpenEvent, onResolved }: IssueListProps) {
     );
   }
 
+  const hasPricingIssues = data.some((issue) => issue.title === "Unknown asset — no price source" || issue.title === "Missing price");
+
   return (
     <div className="space-y-2.5">
+      {hasPricingIssues && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-line bg-base px-3.5 py-3">
+          <p className="text-xs text-soft">Retry market-data lookup for unresolved assets and missing prices.</p>
+          <Button size="sm" variant="secondary" icon={<RefreshCw size={13} />} loading={retryingPricing} disabled={retryingPricing} onClick={() => void retryPricing()}>
+            Retry pricing
+          </Button>
+        </div>
+      )}
+      {pricingError && <p className="text-xs text-bad">{pricingError}</p>}
       {data.map((issue) => (
         <IssueRow key={issue.id} issue={issue} onOpenEvent={onOpenEvent} onResolve={resolve} onLink={link} />
       ))}

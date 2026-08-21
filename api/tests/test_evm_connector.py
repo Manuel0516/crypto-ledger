@@ -23,24 +23,26 @@ OCCURRED_AT = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
 
 
 class FakeResponse:
-    def __init__(self, result: list[dict]):
+    def __init__(self, result, *, status: str = "1", message: str = "OK"):
         self._result = result
+        self._status = status
+        self._message = message
 
     def raise_for_status(self) -> None:
         return None
 
     def json(self) -> dict:
-        return {"message": "OK", "result": self._result}
+        return {"status": self._status, "message": self._message, "result": self._result}
 
 
 class EVMConnectorTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.connector = EVMAddressConnector(ADDRESS, "BSC wallet", chain="bsc")
+        self.connector = EVMAddressConnector(ADDRESS, "BSC wallet", chain="bsc", config={"explorer_api_key": "test-key"})
 
     def test_bsc_chain_and_native_asset_metadata(self) -> None:
         endpoint, network = CHAINS["bsc"]
 
-        self.assertEqual(endpoint, "https://api.routescan.io/v2/network/mainnet/evm/56/etherscan/api")
+        self.assertEqual(endpoint, "https://api.etherscan.io/v2/api")
         self.assertEqual(network, "BNB Smart Chain")
         self.assertEqual(KNOWN_ASSETS["BNB"]["network"], "BNB Smart Chain")
         self.assertEqual(KNOWN_ASSETS["BNB"]["coingecko_id"], "binancecoin")
@@ -48,6 +50,8 @@ class EVMConnectorTests(unittest.TestCase):
 
     def test_api_accepts_bsc_and_rejects_unknown_evm_networks(self) -> None:
         _validate_chain_network("evm_address", "bsc")
+        _validate_chain_network("evm_address", "avalanche")
+        _validate_chain_network("evm_address", "custom")
 
         with self.assertRaises(HTTPException):
             _validate_chain_network("evm_address", "not-a-chain")
@@ -103,8 +107,10 @@ class EVMConnectorTests(unittest.TestCase):
 
         def fake_get(url: str, *, params: dict, timeout: float) -> FakeResponse:
             self.assertEqual(url, CHAINS["bsc"][0])
-            self.assertEqual(timeout, 15.0)
+            self.assertEqual(timeout, 20.0)
             self.assertEqual(params["address"], ADDRESS)
+            self.assertEqual(params["chainid"], "56")
+            self.assertEqual(params["apikey"], "test-key")
             return FakeResponse(responses[params["action"]])
 
         with patch("app.connectors.evm.connector.httpx.get", side_effect=fake_get):
@@ -118,6 +124,136 @@ class EVMConnectorTests(unittest.TestCase):
         self.assertEqual(native.asset_symbol, "BNB")
         self.assertEqual(native.asset_network, "BNB Smart Chain")
         self.assertEqual(native.amount, "1.000000000000000000")
+
+    def test_empty_transfer_messages_are_successful_empty_pages(self) -> None:
+        tx = {
+            "hash": "0xnative-empty-test",
+            "timeStamp": "1787227200",
+            "isError": "0",
+            "value": "1000000000000000000",
+            "input": "0x",
+            "from": OTHER_ADDRESS,
+            "to": ADDRESS,
+            "gasUsed": "21000",
+            "gasPrice": "1000000000",
+        }
+        empty_messages = {
+            "tokentx": "No token transfers found",
+            "tokennfttx": "No NFT transfers found",
+            "token1155tx": "No ERC-1155 transfers found",
+        }
+
+        def fake_get(url: str, *, params: dict, timeout: float) -> FakeResponse:
+            if params["action"] == "txlist":
+                return FakeResponse([tx])
+            return FakeResponse(None, status="0", message=empty_messages[params["action"]])
+
+        with patch("app.connectors.evm.connector.httpx.get", side_effect=fake_get):
+            records = list(self.connector.fetch(since=OCCURRED_AT))
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].payload["_kind"], "native")
+
+    def test_unsupported_optional_action_does_not_abort_native_history(self) -> None:
+        tx = {
+            "hash": "0xnative-optional-test",
+            "timeStamp": "1787227200",
+            "isError": "0",
+            "value": "1000000000000000000",
+            "input": "0x",
+            "from": OTHER_ADDRESS,
+            "to": ADDRESS,
+            "gasUsed": "21000",
+            "gasPrice": "1000000000",
+        }
+
+        def fake_get(url: str, *, params: dict, timeout: float) -> FakeResponse:
+            if params["action"] == "txlist":
+                return FakeResponse([tx])
+            if params["action"] == "tokentx":
+                return FakeResponse(None, status="0", message="chain not supported")
+            return FakeResponse([])
+
+        with patch("app.connectors.evm.connector.httpx.get", side_effect=fake_get):
+            records = list(self.connector.fetch(since=OCCURRED_AT))
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].payload["_kind"], "native")
+
+    def test_fetch_balances_keeps_native_and_token_precision(self) -> None:
+        def fake_get(url: str, *, params: dict, timeout: float) -> FakeResponse:
+            self.assertEqual(params["chainid"], "56")
+            if params["action"] == "balance":
+                return FakeResponse("1234567890123456789")
+            if params["action"] == "tokenlist":
+                return FakeResponse(
+                    [
+                        {
+                            "type": "ERC-20",
+                            "symbol": "USDT",
+                            "balance": "1234567",
+                            "decimals": "6",
+                            "contractAddress": "0x3333333333333333333333333333333333333333",
+                        }
+                    ]
+                )
+            self.fail(f"unexpected balance action: {params['action']}")
+
+        with patch("app.connectors.evm.connector.httpx.get", side_effect=fake_get):
+            balances = list(self.connector.fetch_balances())
+
+        self.assertEqual([balance.asset_symbol for balance in balances], ["BNB", "USDT"])
+        self.assertEqual(balances[0].amount, "1.234567890123456789")
+        self.assertEqual(balances[1].amount, "1.234567")
+
+    def test_avalanche_uses_routescan_and_avax(self) -> None:
+        connector = EVMAddressConnector(ADDRESS, "Avalanche wallet", chain="avalanche")
+        self.assertEqual(CHAINS["avalanche"][0], "https://api.routescan.io/v2/network/mainnet/evm/43114/etherscan/api")
+        self.assertEqual(CHAINS["avalanche"][1], "Avalanche")
+
+        tx = {
+            "hash": "0xavax",
+            "timeStamp": "1787227200",
+            "isError": "0",
+            "value": "1000000000000000000",
+            "input": "0x",
+            "from": OTHER_ADDRESS,
+            "to": ADDRESS,
+            "gasUsed": "21000",
+            "gasPrice": "1000000000",
+        }
+
+        def fake_get(url: str, *, params: dict, timeout: float) -> FakeResponse:
+            self.assertEqual(url, CHAINS["avalanche"][0])
+            self.assertEqual(params["chainid"], "43114")
+            return FakeResponse([tx]) if params["action"] == "txlist" else FakeResponse([])
+
+        with patch("app.connectors.evm.connector.httpx.get", side_effect=fake_get):
+            records = list(connector.fetch(since=OCCURRED_AT))
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(connector.normalize(records[0]).asset_symbol, "AVAX")
+
+    def test_custom_network_does_not_fall_back_to_ethereum(self) -> None:
+        connector = EVMAddressConnector(
+            ADDRESS,
+            "Custom wallet",
+            chain="custom",
+            config={"chain_id": "999", "network_name": "Test EVM", "native_symbol": "TST"},
+        )
+
+        def fake_get(url: str, *, params: dict, timeout: float) -> FakeResponse:
+            self.assertEqual(url, "https://api.routescan.io/v2/network/mainnet/evm/999/etherscan/api")
+            self.assertEqual(params["chainid"], "999")
+            return FakeResponse([])
+
+        with patch("app.connectors.evm.connector.httpx.get", side_effect=fake_get):
+            self.assertEqual(list(connector.fetch(since=OCCURRED_AT)), [])
+
+    def test_bsc_without_key_explains_provider_requirement(self) -> None:
+        connector = EVMAddressConnector(ADDRESS, "BSC wallet", chain="bsc")
+        with self.assertRaisesRegex(Exception, "Etherscan API key"):
+            list(connector.fetch(since=OCCURRED_AT))
 
     def test_bsc_contract_call_records_bnb_gas(self) -> None:
         raw = RawRecord(

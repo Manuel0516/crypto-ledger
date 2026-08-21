@@ -1,64 +1,170 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+import re
 from typing import Iterable
 
 import httpx
 
 from app.connectors.base import Balance, ConnectorUnavailable, NormalizedEvent, NormalizedFee, RawRecord
 
-# The existing chains use their public Blockscout Etherscan-compatible APIs.
-# Routescan provides the same Etherscan-compatible request shape for BNB Smart
-# Chain on its free keyless tier, so BSC can remain a public-address-only
-# source instead of gaining exchange-style credentials.
+# An EVM address is not enough to identify a chain: the same 0x address can
+# exist on every EVM network. Keep built-in networks explicit and never map an
+# unknown value back to Ethereum.
+#
+# Blockscout exposes a public Etherscan-compatible API for the first group.
+# Routescan indexes Avalanche, but does not index BSC. BSC is therefore wired
+# to Etherscan V2, which needs one user-supplied API key. Custom EVM networks
+# use the same Etherscan-compatible shape by default and can override the
+# endpoint in the encrypted account config.
 CHAINS: dict[str, tuple[str, str]] = {
     "ethereum": ("https://eth.blockscout.com/api", "Ethereum"),
     "polygon": ("https://polygon.blockscout.com/api", "Polygon"),
     "arbitrum": ("https://arbitrum.blockscout.com/api", "Arbitrum"),
     "optimism": ("https://optimism.blockscout.com/api", "Optimism"),
     "base": ("https://base.blockscout.com/api", "Base"),
-    "bsc": ("https://api.routescan.io/v2/network/mainnet/evm/56/etherscan/api", "BNB Smart Chain"),
+    "bsc": ("https://api.etherscan.io/v2/api", "BNB Smart Chain"),
+    "avalanche": ("https://api.routescan.io/v2/network/mainnet/evm/43114/etherscan/api", "Avalanche"),
 }
+
+CHAIN_IDS: dict[str, str] = {
+    "ethereum": "1",
+    "polygon": "137",
+    "arbitrum": "42161",
+    "optimism": "10",
+    "base": "8453",
+    "bsc": "56",
+    "avalanche": "43114",
+}
+
+_CUSTOM_CHAIN = "custom"
+_ETH_ADDRESS = re.compile(r"^0x[a-fA-F0-9]{40}$")
+_OPTIONAL_ACTIONS = {"tokentx", "tokennfttx", "token1155tx", "tokenlist"}
+_UNSUPPORTED_MARKERS = ("not supported", "unsupported", "not available", "unknown action", "invalid action")
+_EMPTY_MARKERS = (
+    "no transactions found",
+    "no token transfers found",
+    "no nft transfers found",
+    "no erc20 transfers found",
+    "no erc721 transfers found",
+    "no erc1155 transfers found",
+    "no erc-1155 transfers found",
+    "no records found",
+    "no results found",
+    "no data found",
+)
 
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
+class _ExplorerResponseError(ConnectorUnavailable):
+    """An Etherscan-compatible response that was valid HTTP/JSON but failed."""
+
+    def __init__(self, base: str, action: str, message: str):
+        self.action = action
+        self.response_message = message
+        super().__init__(f"Unexpected response from {base}: {message}")
+
+
 class EVMAddressConnector:
-    """Read-only EVM address tracking. Covers native transfers, ERC-20,
-    ERC-721, and ERC-1155 transfers (plan §33). A zero-value transaction that
-    calls a contract (a DEX swap, a staking deposit, a bridge, any DeFi
-    interaction we don't specifically decode) still becomes a canonical
-    UNKNOWN event carrying its real gas cost and tx hash, rather than being
-    silently dropped — the specific protocol isn't decoded, but the fact
-    that something happened, and what it cost, is never lost (plan §38)."""
+    """Read-only EVM address tracking.
+
+    Covers native transfers, ERC-20, ERC-721, and ERC-1155 transfers. A
+    zero-value contract call remains a canonical UNKNOWN event carrying its
+    gas cost and transaction hash, rather than being silently dropped.
+    """
 
     source_id = "evm"
 
-    def __init__(self, address: str, account_label: str, chain: str = "ethereum"):
-        self.address = address.lower()
+    def __init__(self, address: str, account_label: str, chain: str = "ethereum", config: dict | None = None):
+        self.address = (address or "").lower()
         self.account_label = account_label
-        self.chain = chain if chain in CHAINS else "ethereum"
+        self.chain = chain
+        self.config = config or {}
 
     @property
     def version(self) -> str:
-        return "evm-address-0.4"
+        return "evm-address-0.5"
+
+    def _network_config(self) -> tuple[str, str, str, str | None, str]:
+        if self.chain in CHAINS:
+            base, network = CHAINS[self.chain]
+            chain_id = CHAIN_IDS[self.chain]
+            native_symbol = _native_symbol(network)
+        elif self.chain == _CUSTOM_CHAIN:
+            chain_id = str(self.config.get("chain_id") or "").strip()
+            network = str(self.config.get("network_name") or "").strip()
+            native_symbol = str(self.config.get("native_symbol") or "ETH").strip().upper()
+            if not chain_id.isdigit() or int(chain_id) <= 0:
+                raise ConnectorUnavailable("Custom EVM network needs a positive numeric chain ID.")
+            if not network:
+                raise ConnectorUnavailable("Custom EVM network needs a name.")
+            base = str(self.config.get("explorer_api_url") or "").strip()
+            if not base:
+                base = f"https://api.routescan.io/v2/network/mainnet/evm/{chain_id}/etherscan/api"
+            if not base.startswith(("https://", "http://")):
+                raise ConnectorUnavailable("Custom EVM explorer API URL must start with http:// or https://.")
+        else:
+            raise ConnectorUnavailable(
+                f"Unsupported EVM network '{self.chain}'. Select a supported network or configure it as a custom EVM network."
+            )
+
+        api_key = str(self.config.get("explorer_api_key") or "").strip() or None
+        if self.chain == "bsc" and not api_key:
+            raise ConnectorUnavailable(
+                "BNB Smart Chain history needs an Etherscan API key. Routescan does not index BSC; add the key in the source configuration."
+            )
+        return base, network, chain_id, api_key, native_symbol
 
     def _get_raw(self, base: str, params: dict):
+        request_params = dict(params)
+        _configured_base, _network, chain_id, api_key, _native = self._network_config()
+        action = str(request_params.get("action") or "")
+        # Etherscan V2 and Routescan's Etherscan-compatible endpoint use a
+        # chain ID. Blockscout instance URLs are already chain-specific.
+        configured_style = str(self.config.get("explorer_api_style") or "").lower()
+        if self.chain == _CUSTOM_CHAIN and not configured_style:
+            configured_style = "blockscout" if "blockscout" in base.lower() else "etherscan" if "etherscan" in base.lower() else "routescan"
+        custom_blockscout = self.chain == _CUSTOM_CHAIN and configured_style == "blockscout"
+        if (self.chain in {"bsc", _CUSTOM_CHAIN} and not custom_blockscout) or "routescan" in base:
+            request_params["chainid"] = chain_id
+        if api_key:
+            request_params["apikey"] = api_key
         try:
-            response = httpx.get(base, params=params, timeout=15.0)
+            response = httpx.get(base, params=request_params, timeout=20.0)
             response.raise_for_status()
             data = response.json()
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, ValueError) as exc:
             raise ConnectorUnavailable(f"Could not reach {base}: {exc}") from exc
-        if data.get("message") not in ("OK", "No transactions found"):
-            raise ConnectorUnavailable(f"Unexpected response from {base}: {data.get('message')}")
-        return data.get("result")
+
+        if not isinstance(data, dict):
+            raise ConnectorUnavailable(f"Unexpected response from {base}: response was not a JSON object")
+        message = str(data.get("message") or "").strip()
+        result = data.get("result")
+        normalized_message = message.lower()
+
+        # Empty history is a successful sync. Explorers use status=0 and vary
+        # the wording by endpoint, including "No token transfers found".
+        if _is_empty_result(normalized_message, result):
+            return [] if result is None or isinstance(result, str) else result
+
+        status = str(data.get("status") or "")
+        if status in {"1", "ok"} or normalized_message == "ok":
+            return result
+
+        raise _ExplorerResponseError(base, action, message or str(result) or f"status {status or 'unknown'}")
 
     def _get(self, base: str, params: dict) -> list[dict]:
-        return self._get_raw(base, params) or []
+        result = self._get_raw(base, params)
+        if result is None:
+            return []
+        if not isinstance(result, list):
+            raise ConnectorUnavailable(f"Unexpected response from {base}: result was not a list")
+        return [row for row in result if isinstance(row, dict)]
 
     PAGE_SIZE = 50
-    BACKFILL_PAGES = 5  # since=None (first sync) -> up to 250 records per action
+    BACKFILL_PAGES = 5
 
     def _paged(self, base: str, action: str, pages: int) -> Iterable[dict]:
         for page in range(1, pages + 1):
@@ -77,8 +183,18 @@ class EVMAddressConnector:
             if len(rows) < self.PAGE_SIZE:
                 return
 
+    def _paged_optional(self, base: str, action: str, pages: int) -> Iterable[dict]:
+        try:
+            yield from self._paged(base, action, pages)
+        except _ExplorerResponseError as exc:
+            if exc.action == action and action in _OPTIONAL_ACTIONS and _is_unsupported_message(exc.response_message):
+                return
+            raise
+
     def fetch(self, since: datetime | None = None) -> Iterable[RawRecord]:
-        base, network = CHAINS[self.chain]
+        base, network, _chain_id, _api_key, native_symbol = self._network_config()
+        if not _ETH_ADDRESS.fullmatch(self.address):
+            raise ConnectorUnavailable(f"Invalid EVM address '{self.address}'. Use a 0x-prefixed 40-hex-character address.")
         namespace = f"{self.source_id}:{self.chain}:{self.address}"
         pages = self.BACKFILL_PAGES if since is None else 1
 
@@ -88,49 +204,50 @@ class EVMAddressConnector:
             has_value = tx.get("value", "0") != "0"
             is_contract_call = (tx.get("input") or "0x") != "0x"
             if not has_value and not is_contract_call:
-                continue  # a plain no-op self-call with nothing to record
+                continue
             kind = "native" if has_value else "contract_call"
-            payload = {**tx, "_kind": kind, "_network": network}
+            payload = {**tx, "_kind": kind, "_network": network, "_native_symbol": native_symbol}
             yield RawRecord(namespace, tx["hash"], _timestamp(tx["timeStamp"]), payload)
 
-        for tx in self._paged(base, "tokentx", pages):
-            payload = {**tx, "_kind": "token", "_network": network}
+        for tx in self._paged_optional(base, "tokentx", pages):
+            payload = {**tx, "_kind": "token", "_network": network, "_native_symbol": native_symbol}
             external_id = f"{tx['hash']}-token-{tx.get('contractAddress', '')}-{tx.get('logIndex', '0')}"
             yield RawRecord(namespace, external_id, _timestamp(tx["timeStamp"]), payload)
 
-        for tx in self._paged(base, "tokennfttx", pages):
-            payload = {**tx, "_kind": "nft721", "_network": network}
+        for tx in self._paged_optional(base, "tokennfttx", pages):
+            payload = {**tx, "_kind": "nft721", "_network": network, "_native_symbol": native_symbol}
             external_id = f"{tx['hash']}-nft721-{tx.get('contractAddress', '')}-{tx.get('tokenID', '')}"
             yield RawRecord(namespace, external_id, _timestamp(tx["timeStamp"]), payload)
 
-        for tx in self._paged(base, "token1155tx", pages):
-            payload = {**tx, "_kind": "nft1155", "_network": network}
+        for tx in self._paged_optional(base, "token1155tx", pages):
+            payload = {**tx, "_kind": "nft1155", "_network": network, "_native_symbol": native_symbol}
             external_id = f"{tx['hash']}-nft1155-{tx.get('contractAddress', '')}-{tx.get('tokenID', '')}"
             yield RawRecord(namespace, external_id, _timestamp(tx["timeStamp"]), payload)
 
     def fetch_balances(self) -> Iterable[Balance]:
-        base, network = CHAINS[self.chain]
+        base, network, _chain_id, _api_key, native_symbol = self._network_config()
+        if not _ETH_ADDRESS.fullmatch(self.address):
+            raise ConnectorUnavailable(f"Invalid EVM address '{self.address}'. Use a 0x-prefixed 40-hex-character address.")
         balances: list[Balance] = []
 
         native_wei = self._get_raw(base, {"module": "account", "action": "balance", "address": self.address})
         try:
-            native_amount = int(native_wei) / 1e18
-        except (TypeError, ValueError):
-            native_amount = 0
+            native_amount = Decimal(str(native_wei)) / Decimal(10**18)
+        except (InvalidOperation, TypeError, ValueError):
+            native_amount = Decimal(0)
         if native_amount:
-            balances.append(Balance(_native_symbol(network), f"{native_amount:.18f}", asset_network=network))
+            balances.append(Balance(native_symbol, f"{native_amount:.18f}", asset_network=network, asset_type="COIN"))
 
-        # "tokenlist" isn't universally supported across every Etherscan-
-        # compatible explorer (Routescan's BSC endpoint in particular) — a
-        # missing token list just means "no token balances reported", not a
-        # failed reconciliation; the native balance above still stands.
+        # tokenlist is not universally supported across Etherscan-compatible
+        # explorers. A missing token list only means no token balances were
+        # reported; the native balance above remains valid.
         try:
             tokens = self._get_raw(base, {"module": "account", "action": "tokenlist", "address": self.address}) or []
         except ConnectorUnavailable:
             tokens = []
         for token in tokens if isinstance(tokens, list) else []:
             if token.get("type") not in (None, "ERC-20"):
-                continue  # skip NFTs here — a quantity-of-1 balance isn't a meaningful reconciliation figure
+                continue
             try:
                 decimals = int(token.get("decimals") or 18)
                 raw_balance = int(token.get("balance", "0"))
@@ -138,12 +255,14 @@ class EVMAddressConnector:
                 continue
             if raw_balance == 0:
                 continue
+            token_amount = Decimal(raw_balance) / (Decimal(10) ** decimals)
             balances.append(
                 Balance(
                     token.get("symbol") or "UNKNOWN",
-                    f"{raw_balance / (10 ** decimals):.{min(decimals, 18)}f}",
+                    f"{token_amount:.{min(decimals, 18)}f}",
                     asset_network=network,
                     asset_contract=token.get("contractAddress"),
+                    asset_type="TOKEN",
                 )
             )
         return balances
@@ -153,6 +272,7 @@ class EVMAddressConnector:
         occurred_at = raw.source_timestamp or datetime.now(timezone.utc)
         kind = payload["_kind"]
         is_incoming = payload.get("to", "").lower() == self.address
+        native_symbol = payload.get("_native_symbol") or _native_symbol(payload["_network"])
 
         if kind == "contract_call":
             gas_eth = int(payload["gasUsed"]) * int(payload["gasPrice"]) / 1e18
@@ -163,7 +283,7 @@ class EVMAddressConnector:
                 status="REQUIRES_REVIEW",
                 occurred_at=occurred_at,
                 original_timestamp=occurred_at.isoformat(),
-                asset_symbol=_native_symbol(payload["_network"]),
+                asset_symbol=native_symbol,
                 asset_network=payload["_network"],
                 amount="0",
                 source_label=self.account_label,
@@ -171,7 +291,7 @@ class EVMAddressConnector:
                 address_from=payload.get("from"),
                 address_to=payload.get("to"),
                 notes=f"Contract call, not decoded · {payload['hash'][:12]}…",
-                fees=[NormalizedFee(fee_type="GAS_FEE", asset_symbol=_native_symbol(payload["_network"]), amount=f"{gas_eth:.18f}")],
+                fees=[NormalizedFee(fee_type="GAS_FEE", asset_symbol=native_symbol, amount=f"{gas_eth:.18f}")],
                 tx_hash=payload.get("hash"),
                 block_height=_maybe_int(payload.get("blockNumber")),
                 block_hash=payload.get("blockHash"),
@@ -184,7 +304,7 @@ class EVMAddressConnector:
             fees: list[NormalizedFee] = []
             if not is_incoming:
                 gas_eth = int(payload["gasUsed"]) * int(payload["gasPrice"]) / 1e18
-                fees.append(NormalizedFee(fee_type="GAS_FEE", asset_symbol=_native_symbol(payload["_network"]), amount=f"{gas_eth:.18f}"))
+                fees.append(NormalizedFee(fee_type="GAS_FEE", asset_symbol=native_symbol, amount=f"{gas_eth:.18f}"))
             return NormalizedEvent(
                 event_type=event_type,
                 event_subtype="native",
@@ -192,7 +312,7 @@ class EVMAddressConnector:
                 status="COMPLETE",
                 occurred_at=occurred_at,
                 original_timestamp=occurred_at.isoformat(),
-                asset_symbol=_native_symbol(payload["_network"]),
+                asset_symbol=native_symbol,
                 asset_network=payload["_network"],
                 amount=f"{amount:.18f}",
                 source_label=self.account_label,
@@ -236,7 +356,7 @@ class EVMAddressConnector:
 
         # nft721 / nft1155
         is_mint = payload.get("from", "").lower() == _ZERO_ADDRESS
-        event_type = "NFT_MINT" if is_mint else ("NFT_TRANSFER")
+        event_type = "NFT_MINT" if is_mint else "NFT_TRANSFER"
         direction = "+" if is_incoming else "-"
         quantity = payload.get("tokenValue", "1") if kind == "nft1155" else "1"
         token_id = payload.get("tokenID", "")
@@ -280,4 +400,15 @@ def _maybe_int(value) -> int | None:
 
 
 def _native_symbol(network: str) -> str:
-    return {"Polygon": "MATIC", "BNB Smart Chain": "BNB"}.get(network, "ETH")
+    return {"Polygon": "MATIC", "BNB Smart Chain": "BNB", "Avalanche": "AVAX"}.get(network, "ETH")
+
+
+def _is_empty_result(message: str, result) -> bool:
+    if any(marker in message for marker in _EMPTY_MARKERS):
+        return result is None or result == [] or isinstance(result, str)
+    return result == [] and message in {"", "ok"}
+
+
+def _is_unsupported_message(message: str) -> bool:
+    normalized = str(message or "").lower()
+    return any(marker in normalized for marker in _UNSUPPORTED_MARKERS)

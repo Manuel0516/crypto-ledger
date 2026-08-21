@@ -168,6 +168,11 @@ interface SourceForm {
   wallet_software: string;
   note: string;
   chain_network: string;
+  chain_id: string;
+  network_name: string;
+  native_symbol: string;
+  explorer_api_url: string;
+  explorer_api_key: string;
   address: string;
   host: string;
   port: string;
@@ -215,6 +220,11 @@ const EMPTY_FORM: SourceForm = {
   wallet_software: "",
   note: "",
   chain_network: "ethereum",
+  chain_id: "",
+  network_name: "",
+  native_symbol: "ETH",
+  explorer_api_url: "",
+  explorer_api_key: "",
   address: "",
   host: "127.0.0.1",
   port: "18082",
@@ -268,6 +278,17 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
       if (type === "evm_address") {
         body.address = form.address;
         body.chain_network = form.chain_network;
+        if (form.chain_network === "custom") {
+          body.config = {
+            chain_id: form.chain_id,
+            network_name: form.network_name,
+            native_symbol: form.native_symbol,
+            explorer_api_url: form.explorer_api_url || undefined,
+            explorer_api_key: form.explorer_api_key.trim() || undefined,
+          };
+        } else if (form.chain_network === "bsc" && form.explorer_api_key.trim()) {
+          body.config = { explorer_api_key: form.explorer_api_key.trim() };
+        }
       }
       if (type === "monero_rpc") {
         body.config = { host: form.host, port: form.port, username: form.username || undefined, password: form.password || undefined };
@@ -328,7 +349,7 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
             (form.exchange_provider !== "bitget" || form.passphrase.trim().length > 0)
           : true
         : type === "bitcoin_address" || type === "solana_address" || type === "evm_address"
-          ? form.address.trim().length > 0
+          ? form.address.trim().length > 0 && (type !== "evm_address" || (form.chain_network !== "custom" || (form.chain_id.trim().length > 0 && form.network_name.trim().length > 0)) && (form.chain_network !== "bsc" || form.explorer_api_key.trim().length > 0))
           : type === "monero_rpc"
             ? form.host.trim().length > 0 && form.port.trim().length > 0
             : type === "lightning_node"
@@ -474,6 +495,30 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
                     ))}
                   </Select>
                 </Field>
+                {form.chain_network === "bsc" && (
+                  <Field label="Etherscan API key" htmlFor="acc-explorer-key" className="sm:col-span-2" hint="BSC is not indexed by Routescan. Create one Etherscan V2 key; it is encrypted before storage.">
+                    <Input id="acc-explorer-key" type="password" value={form.explorer_api_key} onChange={(e) => change("explorer_api_key", e.target.value)} placeholder="Etherscan API key" />
+                  </Field>
+                )}
+                {form.chain_network === "custom" && (
+                  <div className="sm:col-span-2 grid gap-4 rounded-lg border border-line p-3.5 sm:grid-cols-2">
+                    <Field label="Chain ID" htmlFor="acc-chain-id" hint="The numeric EVM chain ID from MetaMask.">
+                      <Input id="acc-chain-id" inputMode="numeric" value={form.chain_id} onChange={(e) => change("chain_id", e.target.value)} placeholder="43114" />
+                    </Field>
+                    <Field label="Network name" htmlFor="acc-network-name">
+                      <Input id="acc-network-name" value={form.network_name} onChange={(e) => change("network_name", e.target.value)} placeholder="Avalanche C-Chain" />
+                    </Field>
+                    <Field label="Native symbol" htmlFor="acc-native-symbol" hint="For example ETH, AVAX, or BNB.">
+                      <Input id="acc-native-symbol" value={form.native_symbol} onChange={(e) => change("native_symbol", e.target.value.toUpperCase())} placeholder="ETH" />
+                    </Field>
+                    <Field label="Explorer API URL (optional)" htmlFor="acc-explorer-url" hint="Defaults to Routescan. Use a Blockscout or Etherscan-compatible API URL for another indexed network.">
+                      <Input id="acc-explorer-url" value={form.explorer_api_url} onChange={(e) => change("explorer_api_url", e.target.value)} placeholder="https://…/api" />
+                    </Field>
+                    <Field label="Explorer API key (optional)" htmlFor="acc-custom-explorer-key" className="sm:col-span-2" hint="Required by providers such as Etherscan; encrypted before storage.">
+                      <Input id="acc-custom-explorer-key" type="password" value={form.explorer_api_key} onChange={(e) => change("explorer_api_key", e.target.value)} placeholder="Optional API key" />
+                    </Field>
+                  </div>
+                )}
               </>
             )}
 

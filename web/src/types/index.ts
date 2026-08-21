@@ -5,11 +5,25 @@ export interface AssetHolding {
   id: number;
   symbol: string;
   name: string;
+  asset_type: string;
+  network: string | null;
+  contract_address: string | null;
   amount: number;
   value_eur: number;
   value_sek: number;
   value_display: number;
   display_currency: string;
+}
+
+export interface AccountHolding {
+  id: number;
+  name: string;
+  connector_type: string;
+  address: string | null;
+  chain_network: string | null;
+  status: string;
+  balance_synced_at: string | null;
+  balances: AssetHolding[];
 }
 
 export interface OverviewData {
@@ -18,6 +32,7 @@ export interface OverviewData {
   display_currency: string;
   portfolio_display: number;
   assets: AssetHolding[];
+  accounts: AccountHolding[];
   issues: number;
   last_sync: string | null;
 }
@@ -107,10 +122,12 @@ export interface Valuation {
   total_value: string;
   provider: string;
   method: string;
+  granularity: string;
   confidence: string;
   manual_override: boolean;
   requested_timestamp: string;
   observation_timestamp: string;
+  fetched_at: string;
 }
 
 export interface FeeDetail {
@@ -253,6 +270,12 @@ export interface Account {
   chain_network: string | null;
   address: string | null;
   has_config: boolean;
+  evm_config?: {
+    chain_id?: string;
+    network_name?: string;
+    native_symbol?: string;
+    explorer_api_url?: string;
+  } | null;
   syncable: boolean;
   status: string;
   wallet_software: string | null;

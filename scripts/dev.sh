@@ -29,7 +29,7 @@ fi
 
 if [[ ! -x "$VITE_BIN" ]]; then
   echo "Missing web dependencies at $WEB_DIR/node_modules" >&2
-  echo "Install them with: cd $WEB_DIR && npm install" >&2
+  echo "Install them with: cd $WEB_DIR && npm ci" >&2
   exit 1
 fi
 

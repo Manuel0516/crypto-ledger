@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowRight, Eye, Fingerprint, Link2, PencilLine, Plus, RotateCcw, Trash2 } from "lucide-react";
 import type { EventDetail, EditableEventField, Issue } from "../../types";
 import { EDITABLE_EVENT_FIELDS, formatType } from "../../types";
@@ -204,26 +204,26 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
 
           {/* Details grid */}
           <Section title="Details">
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-4">
-              <DetailRow label="Source" value={event.source_label} />
-              <DetailRow label="Destination" value={event.destination_label || "—"} />
-              <DetailRow label="Counterparty" value={event.counterparty || "—"} />
-              {event.merchant && <DetailRow label="Merchant" value={event.merchant} />}
+            <dl className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
+              <DetailRow label="Source" value={event.source_label} copyText={event.source_label} />
+              <DetailRow label="Destination" value={event.destination_label || "—"} copyText={event.destination_label || undefined} />
+              <DetailRow label="Counterparty" value={event.counterparty || "—"} copyText={event.counterparty || undefined} wide />
+              {event.merchant && <DetailRow label="Merchant" value={event.merchant} copyText={event.merchant} />}
               {event.secondary_asset_symbol && event.secondary_amount && (
                 <DetailRow
                   label="Received"
                   value={<CryptoAmount amount={event.secondary_amount} symbol={event.secondary_asset_symbol} className="text-[13px] text-ink" />}
                 />
               )}
-              <DetailRow label="Fees" value={feeSummary(data)} />
+              <DetailRow label="Fees" value={feeSummary(data)} copyText={data.fees.length ? feeSummary(data) : undefined} wide />
               <DetailRow label="EUR value" value={<MoneyValue value={event.eur_value} />} />
               <DetailRow label="SEK value" value={<MoneyValue value={event.sek_value} currency="SEK" />} />
             </dl>
             {(event.description || event.tags.length || event.evidence_reference) && (
               <div className="mt-4 grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-                {event.description && <DetailRow label="Description" value={event.description} />}
-                {event.tags.length > 0 && <DetailRow label="Tags" value={event.tags.join(" · ")} />}
-                {event.evidence_reference && <DetailRow label="Evidence reference" value={<span className="break-all font-mono text-[11px]">{event.evidence_reference}</span>} />}
+                {event.description && <DetailRow label="Description" value={event.description} copyText={event.description} />}
+                {event.tags.length > 0 && <DetailRow label="Tags" value={event.tags.join(" · ")} copyText={event.tags.join(" · ")} />}
+                {event.evidence_reference && <DetailRow label="Evidence reference" value={<span className="font-mono text-[11px]">{event.evidence_reference}</span>} copyText={event.evidence_reference} wide />}
               </div>
             )}
           </Section>
@@ -235,10 +235,12 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
                 <DetailRow
                   label="From address"
                   value={event.address_from ? <span className="break-all font-mono text-[11px]">{event.address_from}</span> : "—"}
+                  copyText={event.address_from || undefined}
                 />
                 <DetailRow
                   label="To address"
                   value={event.address_to ? <span className="break-all font-mono text-[11px]">{event.address_to}</span> : "—"}
+                  copyText={event.address_to || undefined}
                 />
               </dl>
             </Section>
@@ -252,16 +254,16 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
           {/* Structured network/exchange evidence (plan §17-18) */}
           {hasEvidence(data.evidence) && (
             <Section title="On-chain / exchange evidence">
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-4">
-                {data.evidence.tx_hash && <DetailRow label="Transaction hash" value={<span className="break-all font-mono text-[11px]">{data.evidence.tx_hash}</span>} />}
+              <dl className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
+                {data.evidence.tx_hash && <DetailRow label="Transaction hash" value={<span className="font-mono text-[11px]">{data.evidence.tx_hash}</span>} copyText={data.evidence.tx_hash} wide />}
                 {data.evidence.block_height !== null && <DetailRow label="Block height" value={data.evidence.block_height} />}
-                {data.evidence.block_hash && <DetailRow label="Block hash" value={<span className="break-all font-mono text-[11px]">{data.evidence.block_hash}</span>} />}
+                {data.evidence.block_hash && <DetailRow label="Block hash" value={<span className="font-mono text-[11px]">{data.evidence.block_hash}</span>} copyText={data.evidence.block_hash} wide />}
                 {data.evidence.log_index !== null && <DetailRow label="Log index" value={data.evidence.log_index} />}
-                {data.evidence.contract_address && <DetailRow label="Contract" value={<span className="break-all font-mono text-[11px]">{data.evidence.contract_address}</span>} />}
-                {data.evidence.order_id && <DetailRow label="Order ID" value={<span className="font-mono text-[11px]">{data.evidence.order_id}</span>} />}
-                {data.evidence.trade_id && <DetailRow label="Trade ID" value={<span className="font-mono text-[11px]">{data.evidence.trade_id}</span>} />}
-                {data.evidence.deposit_id && <DetailRow label="Deposit ID" value={<span className="font-mono text-[11px]">{data.evidence.deposit_id}</span>} />}
-                {data.evidence.withdrawal_id && <DetailRow label="Withdrawal ID" value={<span className="font-mono text-[11px]">{data.evidence.withdrawal_id}</span>} />}
+                {data.evidence.contract_address && <DetailRow label="Contract" value={<span className="font-mono text-[11px]">{data.evidence.contract_address}</span>} copyText={data.evidence.contract_address} wide />}
+                {data.evidence.order_id && <DetailRow label="Order ID" value={<span className="font-mono text-[11px]">{data.evidence.order_id}</span>} copyText={data.evidence.order_id} wide />}
+                {data.evidence.trade_id && <DetailRow label="Trade ID" value={<span className="font-mono text-[11px]">{data.evidence.trade_id}</span>} copyText={data.evidence.trade_id} wide />}
+                {data.evidence.deposit_id && <DetailRow label="Deposit ID" value={<span className="font-mono text-[11px]">{data.evidence.deposit_id}</span>} copyText={data.evidence.deposit_id} wide />}
+                {data.evidence.withdrawal_id && <DetailRow label="Withdrawal ID" value={<span className="font-mono text-[11px]">{data.evidence.withdrawal_id}</span>} copyText={data.evidence.withdrawal_id} wide />}
               </dl>
             </Section>
           )}
@@ -326,17 +328,19 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
                   <Fingerprint size={14} className="mt-0.5 shrink-0 text-faint" />
                   <div className="min-w-0">
                     <p className="font-mono text-[10px] uppercase tracking-wide text-faint">SHA-256 payload</p>
-                    <p className="mt-1 break-all font-mono text-[10px] text-soft">{data.raw.payload_hash}</p>
+                    <CopyableValue text={data.raw.payload_hash}>
+                      <span className="mt-1 break-all font-mono text-[10px] text-soft">{data.raw.payload_hash}</span>
+                    </CopyableValue>
                   </div>
                 </div>
                 <p className="text-[11px] text-faint">Normalizer {event.normalizer_version || data.raw.connector_version}</p>
-                <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
-                  <DetailRow label="Source" value={data.raw.source_id} />
-                  <DetailRow label="External ID" value={<span className="break-all font-mono text-[10px]">{data.raw.external_id}</span>} />
+                <dl className="grid grid-cols-1 gap-x-4 gap-y-3 text-xs sm:grid-cols-2">
+                  <DetailRow label="Source" value={data.raw.source_id} copyText={data.raw.source_id} />
+                  <DetailRow label="External ID" value={<span className="font-mono text-[10px]">{data.raw.external_id}</span>} copyText={data.raw.external_id} wide />
                   <DetailRow label="Imported" value={formatDateTime(data.raw.received_at)} />
                   <DetailRow label="Original timestamp" value={data.raw.source_timestamp ? formatDateTime(data.raw.source_timestamp) : "—"} />
                   {data.raw.source_timezone && <DetailRow label="Source timezone" value={data.raw.source_timezone} />}
-                  {data.raw.source_reference && <DetailRow label="Source reference" value={<span className="break-all font-mono text-[10px]">{data.raw.source_reference}</span>} />}
+                  {data.raw.source_reference && <DetailRow label="Source reference" value={<span className="font-mono text-[10px]">{data.raw.source_reference}</span>} copyText={data.raw.source_reference} wide />}
                 </dl>
                 <Button size="sm" variant="secondary" icon={<Eye size={13} />} onClick={() => setShowRawPayload((visible) => !visible)}>{showRawPayload ? "Hide original record" : "View original record"}</Button>
                 {showRawPayload && <pre className="max-h-72 overflow-auto rounded-lg bg-base p-3 text-[10px] leading-relaxed text-soft">{JSON.stringify(data.raw.payload, null, 2)}</pre>}
@@ -367,12 +371,59 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
+function DetailRow({ label, value, copyText, wide = false }: { label: string; value: React.ReactNode; copyText?: string; wide?: boolean }) {
   return (
-    <div>
+    <div className={cx("min-w-0", wide && "sm:col-span-2")}>
       <dt className="text-[10px] font-medium uppercase tracking-wider text-faint">{label}</dt>
-      <dd className={cx("mt-1 text-[13px] text-ink")}>{value}</dd>
+      <dd className="mt-1 min-w-0 max-w-full break-words text-[13px] text-ink [overflow-wrap:anywhere]">
+        {copyText ? <CopyableValue text={copyText}>{value}</CopyableValue> : value}
+      </dd>
     </div>
+  );
+}
+
+function CopyableValue({ text, children }: { text: string; children: React.ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+  }, []);
+
+  const copy = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      }
+      setCopied(true);
+      if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      // Clipboard access can be denied by the browser; the value remains
+      // selectable and fully visible, so this should stay a quiet failure.
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={() => void copy()}
+      title="Copy"
+      className="inline-flex max-w-full cursor-copy flex-wrap items-baseline gap-x-2 gap-y-0.5 text-left align-top hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    >
+      <span className="min-w-0 max-w-full break-words [overflow-wrap:anywhere]">{children}</span>
+      {copied && <span className="shrink-0 font-mono text-[10px] font-medium text-good" aria-live="polite">Copied</span>}
+    </button>
   );
 }
 
@@ -441,13 +492,19 @@ function FeesEditor({ eventId, fees, onChange }: { eventId: number; fees: EventD
     <div className="space-y-2">
       {fees.length === 0 && <p className="text-xs text-soft">No fees recorded for this event.</p>}
       {fees.map((fee) => (
-        <div key={fee.id} className="flex items-center justify-between rounded-lg border border-line px-3 py-2.5 text-xs">
+        <div key={fee.id} className="flex items-start justify-between gap-3 rounded-lg border border-line px-3 py-2.5 text-xs">
           <div className="min-w-0">
-            <p className="font-medium text-ink">
-              {fee.amount} {fee.asset_symbol} <span className="text-faint">· {formatType(fee.fee_type)}</span>
-              {fee.manual && <span className="ml-1.5 font-mono text-[9px] uppercase tracking-wide text-warn">manual</span>}
-            </p>
-            {fee.fee_recipient && <p className="mt-0.5 truncate text-faint">to {fee.fee_recipient}</p>}
+            <CopyableValue text={`${fee.amount} ${fee.asset_symbol}`}>
+              <span className="font-medium text-ink">
+                {fee.amount} {fee.asset_symbol} <span className="text-faint">· {formatType(fee.fee_type)}</span>
+                {fee.manual && <span className="ml-1.5 font-mono text-[9px] uppercase tracking-wide text-warn">manual</span>}
+              </span>
+            </CopyableValue>
+            {fee.fee_recipient && (
+              <CopyableValue text={fee.fee_recipient}>
+                <span className="mt-0.5 text-faint">to {fee.fee_recipient}</span>
+              </CopyableValue>
+            )}
           </div>
           <button
             onClick={() => void removeFee(fee.id)}
@@ -598,9 +655,9 @@ function PriceEditor({ eventId, valuations, onChange }: { eventId: number; valua
                     <MoneyValue value={valuation?.total_value ?? null} currency={currency as "EUR" | "SEK"} mono={false} />
                   </p>
                   <p className="mt-0.5 text-[11px] text-faint">
-                    {valuation ? `${valuation.unit_price} per unit · ${valuation.provider} · ${formatType(valuation.method)}` : "No valuation yet"}
+                    {valuation ? `${valuation.unit_price} per unit · ${valuation.provider} · ${formatType(valuation.method)} · ${valuation.granularity}` : "No valuation yet"}
                   </p>
-                  {valuation && <p className="mt-0.5 text-[10px] text-faint">Requested {formatDateTime(valuation.requested_timestamp)} · observed {formatDateTime(valuation.observation_timestamp)}</p>}
+                  {valuation && <p className="mt-0.5 text-[10px] text-faint">Requested {formatDateTime(valuation.requested_timestamp)} · observed {formatDateTime(valuation.observation_timestamp)} · fetched {formatDateTime(valuation.fetched_at)}</p>}
                   {valuation?.manual_override && (
                     <span className="mt-0.5 inline-block font-mono text-[9px] uppercase tracking-wide text-warn">manually set</span>
                   )}

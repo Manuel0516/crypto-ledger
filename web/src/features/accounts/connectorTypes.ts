@@ -10,7 +10,7 @@ export interface ConnectorTypeMeta {
 export const CONNECTOR_TYPES: ConnectorTypeMeta[] = [
   { id: "exchange_import", label: "Exchange", hint: "Bitget, Binance — live API key or file import", glyph: "EX" },
   { id: "bitcoin_address", label: "Bitcoin", hint: "Address or xpub/ypub/zpub — no keys", glyph: "₿" },
-  { id: "evm_address", label: "EVM wallet", hint: "MetaMask, Rabby — Ethereum, L2s & BNB Smart Chain", glyph: "Ξ" },
+  { id: "evm_address", label: "EVM wallet", hint: "MetaMask, Rabby — Ethereum, L2s, Avalanche, BSC & custom networks", glyph: "Ξ" },
   { id: "solana_address", label: "Solana", hint: "Phantom — native SOL transfers", glyph: "◎" },
   { id: "monero_rpc", label: "Monero", hint: "Your own monero-wallet-rpc", glyph: "ɱ" },
   { id: "lightning_node", label: "Lightning", hint: "Any NWC wallet (ZEUS, Alby Hub, …) or your own LND node", glyph: "⚡" },
@@ -32,7 +32,9 @@ export const EVM_CHAINS: { id: string; label: string }[] = [
   { id: "arbitrum", label: "Arbitrum" },
   { id: "optimism", label: "Optimism" },
   { id: "base", label: "Base" },
-  { id: "bsc", label: "BNB Smart Chain (BSC)" },
+  { id: "avalanche", label: "Avalanche C-Chain" },
+  { id: "bsc", label: "BNB Smart Chain (API key required)" },
+  { id: "custom", label: "Other EVM network" },
 ];
 
 export function connectorTypeMeta(id: string): ConnectorTypeMeta {
@@ -51,7 +53,7 @@ export function connectorSummary(account: {
     return isXpub ? `HD wallet · ${truncateMiddle(address)}` : truncateMiddle(address);
   }
   if (connector_type === "evm_address" && address) {
-    const chain = EVM_CHAINS.find((c) => c.id === chain_network)?.label ?? "Ethereum";
+    const chain = EVM_CHAINS.find((c) => c.id === chain_network)?.label ?? (chain_network === "custom" ? "Other EVM network" : "Ethereum");
     return `${chain} · ${truncateMiddle(address)}`;
   }
   if (connector_type === "solana_address" && address) return truncateMiddle(address);

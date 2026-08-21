@@ -19,6 +19,7 @@ import { Skeleton } from "../components/ui/Skeleton";
 import { PortfolioValue } from "../components/domain/PortfolioValue";
 import { deriveLedgerStats } from "../lib/ledgerStats";
 import { HoldingCard } from "../components/domain/HoldingCard";
+import { AccountHoldings } from "../components/domain/AccountHoldings";
 import { ActivityCard } from "../components/domain/ActivityList";
 import { SourceHealth } from "../components/domain/SourceHealth";
 import { BackupStatus } from "../components/domain/BackupStatus";
@@ -92,6 +93,20 @@ export function OverviewPage({ onOpenEvent, navigate }: OverviewPageProps) {
           assets={(overview.assets ?? []).length}
           stats={stats}
         />
+      )}
+
+      {/* Per-source balances */}
+      {!overviewLoading && (overview?.accounts ?? []).length > 0 && (
+        <section>
+          <SectionHeader
+            eyebrow="Where your assets are"
+            title="Balances by linked source"
+            subtitle="Each address is kept separate, while the portfolio total below combines the same assets across sources"
+          />
+          <div className="mt-3">
+            <AccountHoldings accounts={overview?.accounts ?? []} />
+          </div>
+        </section>
       )}
 
       {/* Holdings */}
