@@ -32,6 +32,7 @@ def list_issues(session: Session = Depends(get_session)):
             # The frontend offers a one-click "Link accounts" action only for
             # this issue type — everything else is just dismissed as reviewed.
             "linkable": i.title == _TRANSFER_ISSUE_TITLE,
+            "markable": i.title == _TRANSFER_ISSUE_TITLE,
         }
         for i in issues
     ]
@@ -120,3 +121,35 @@ def link_issue_transfer(issue_id: int, session: Session = Depends(get_session)):
     issue.resolved = True
     session.commit()
     return {"id": issue.id, "resolved": True, "linked_event_id": candidate.id}
+
+
+@router.post("/{issue_id}/mark-internal")
+def mark_issue_internal(issue_id: int, session: Session = Depends(get_session)):
+    """Resolve a possible-transfer issue without requiring a counterpart.
+
+    This is deliberately an explicit user action: it means the event is yours
+    and non-taxable even though the other side is not represented here.
+    """
+    issue = session.get(Issue, issue_id)
+    if issue is None:
+        raise HTTPException(404, "Issue not found")
+    if issue.title != _TRANSFER_ISSUE_TITLE or issue.event_id is None:
+        raise HTTPException(400, "This issue isn't a possible internal transfer")
+    event = session.get(Event, issue.event_id)
+    if event is None:
+        raise HTTPException(404, "Event not found")
+    event.internal_transfer = True
+    # If the matcher found the other leg, classify both events explicitly but
+    # still do not create an EventLink. This lets the user accept the transfer
+    # without making the link itself a prerequisite for report readiness.
+    candidate = find_transfer_candidate(session, event)
+    if candidate is not None:
+        candidate.internal_transfer = True
+    issue.resolved = True
+    session.commit()
+    return {
+        "id": issue.id,
+        "resolved": True,
+        "internal_transfer": True,
+        "marked_event_ids": [event.id, candidate.id] if candidate is not None else [event.id],
+    }

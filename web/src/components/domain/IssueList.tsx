@@ -36,6 +36,12 @@ export function IssueList({ onOpenEvent, onResolved }: IssueListProps) {
     onResolved?.();
   };
 
+  const markInternal = async (issue: Issue) => {
+    await postJson("/api/issues/" + issue.id + "/mark-internal", {});
+    await refresh();
+    onResolved?.();
+  };
+
   const retryPricing = async () => {
     setRetryingPricing(true);
     setPricingError("");
@@ -85,7 +91,7 @@ export function IssueList({ onOpenEvent, onResolved }: IssueListProps) {
       )}
       {pricingError && <p className="text-xs text-bad">{pricingError}</p>}
       {data.map((issue) => (
-        <IssueRow key={issue.id} issue={issue} onOpenEvent={onOpenEvent} onResolve={resolve} onLink={link} />
+        <IssueRow key={issue.id} issue={issue} onOpenEvent={onOpenEvent} onResolve={resolve} onLink={link} onMarkInternal={markInternal} />
       ))}
     </div>
   );
@@ -96,20 +102,22 @@ function IssueRow({
   onOpenEvent,
   onResolve,
   onLink,
+  onMarkInternal,
 }: {
   issue: Issue;
   onOpenEvent?: (id: number) => void;
   onResolve: (issue: Issue) => Promise<void>;
   onLink: (issue: Issue) => Promise<void>;
+  onMarkInternal: (issue: Issue) => Promise<void>;
 }) {
-  const [working, setWorking] = useState<"resolve" | "link" | null>(null);
+  const [working, setWorking] = useState<"resolve" | "link" | "mark" | null>(null);
   const [error, setError] = useState("");
 
-  const run = async (kind: "resolve" | "link") => {
+  const run = async (kind: "resolve" | "link" | "mark") => {
     setWorking(kind);
     setError("");
     try {
-      await (kind === "link" ? onLink(issue) : onResolve(issue));
+      await (kind === "link" ? onLink(issue) : kind === "mark" ? onMarkInternal(issue) : onResolve(issue));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "That didn't work — try again");
     } finally {
@@ -133,6 +141,9 @@ function IssueRow({
         )}
         {issue.linkable && <Button size="sm" variant="accent-soft" icon={<Link2 size={13} />} loading={working === "link"} disabled={working !== null} onClick={() => void run("link")}>
           Link accounts
+        </Button>}
+        {issue.markable && <Button size="sm" variant="secondary" loading={working === "mark"} disabled={working !== null} onClick={() => void run("mark")}>
+          Mark internal
         </Button>}
         <Button size="sm" variant={issue.linkable ? "secondary" : "accent-soft"} loading={working === "resolve"} disabled={working !== null} onClick={() => void run("resolve")}>
           Resolve issue

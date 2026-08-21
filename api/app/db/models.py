@@ -172,6 +172,12 @@ class Event(Base):
     deposit_id: Mapped[str | None] = mapped_column(String)
     withdrawal_id: Mapped[str | None] = mapped_column(String)
 
+    # Explicit user classification for a move whose counterpart is missing
+    # or outside this ledger. This is intentionally separate from
+    # destination_label/account matching: an internal transfer can be known
+    # to be yours without both sides being imported and linked.
+    internal_transfer: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
     provenance: Mapped[str] = mapped_column(String, nullable=False, default="automatic")  # automatic | manual
     normalizer_version: Mapped[str] = mapped_column(String, nullable=False)
 

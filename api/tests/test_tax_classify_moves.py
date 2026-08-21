@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.ledger.overrides import effective_values
-from app.core.tax.common import EffectiveEvent, classify_moves
+from app.core.tax.common import EffectiveEvent, build_supplementary_rows, classify_moves
 from app.db.models import Account, Asset, Base, Event, EventLink
 
 OCCURRED_AT = datetime(2026, 7, 22, tzinfo=timezone.utc)
@@ -69,6 +69,33 @@ class ClassifyMovesTests(unittest.TestCase):
         pairs, ambiguous = classify_moves([event])
         self.assertEqual(pairs, [])
         self.assertEqual([e.id for e in ambiguous], [event._event.id])
+
+    def test_explicitly_internal_unlinked_move_is_not_ambiguous(self) -> None:
+        event = self._event(
+            event_type="WITHDRAWAL",
+            direction="-",
+            primary_amount="0.9",
+            internal_transfer=True,
+            destination_label="My hardware wallet",
+        )
+        pairs, ambiguous = classify_moves([event])
+        self.assertEqual(pairs, [])
+        self.assertEqual(ambiguous, [])
+
+    def test_explicitly_internal_move_is_listed_as_a_standalone_transfer(self) -> None:
+        event = self._event(
+            event_type="WITHDRAWAL",
+            direction="-",
+            primary_amount="0.9",
+            internal_transfer=True,
+            destination_label="My hardware wallet",
+        )
+        rows, _corrections, _schedule, _total, _reconciliation = build_supplementary_rows(
+            self.session, [event], [], OCCURRED_AT.year
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].event_ids, [event.id])
+        self.assertEqual(rows[0].to_label, "My hardware wallet")
 
     def test_a_secondary_leg_of_a_different_asset_is_not_treated_as_self_canceling(self) -> None:
         # A real trade's quote leg (e.g. BUY BTC / SELL USDT) must still be

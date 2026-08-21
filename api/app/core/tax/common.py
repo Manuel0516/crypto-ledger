@@ -85,6 +85,10 @@ class EffectiveEvent:
     def notes(self) -> str | None:
         return self._values["notes"]
 
+    @property
+    def internal_transfer(self) -> bool:
+        return bool(self._event.internal_transfer)
+
 
 def load_events_through(session: Session, tax_year: int) -> list[EffectiveEvent]:
     """All events up to and including 31 Dec of tax_year, oldest first, with
@@ -157,7 +161,9 @@ def classify_moves(events: list[EffectiveEvent]) -> tuple[list[TransferPair], li
     provably non-taxable on its own, so it never needs linking or manual
     resolution in the first place."""
     by_id = {e.id: e for e in events}
-    moves = [e for e in events if e.event_type in _MOVE_TYPES and not _is_self_canceling_relocation(e)]
+    # Explicitly marked events are already classified by the user. They do
+    # not need a counterpart link and must not remain in the ambiguous bucket.
+    moves = [e for e in events if e.event_type in _MOVE_TYPES and not e.internal_transfer and not _is_self_canceling_relocation(e)]
     paired_ids: set[int] = set()
     pairs: list[TransferPair] = []
     for event in moves:
@@ -260,7 +266,7 @@ def build_readiness(
         detail = (
             f"{event.event_type.title()} of {event.primary_amount} {event.primary_asset.symbol} on "
             f"{event.occurred_at.date()} isn't linked as an internal transfer and isn't otherwise "
-            "categorized — link it to its counterpart or correct its type before generating a report."
+            "categorized — link it to its counterpart, mark it as an internal move, or correct its type before generating a report."
         )
         if link:
             candidate, confidence = link
@@ -448,6 +454,31 @@ def build_supplementary_rows(
         for pair in pairs
         if pair.withdrawal.id in year_event_ids or pair.deposit.id in year_event_ids
     ]
+    # A transfer can be confirmed as internal even when the other side is not
+    # connected, was outside the source retention window, or is not imported
+    # into this ledger. Keep it visible in the report without inventing a
+    # linked event or a destination account.
+    for event in year_events:
+        if not event.internal_transfer or event.event_type not in _MOVE_TYPES:
+            continue
+        if _is_self_canceling_relocation(event):
+            continue
+        if event.direction == "-":
+            from_label = event.source_label
+            to_label = event.destination_label or event.counterparty or "Unlinked internal destination"
+        else:
+            from_label = event.counterparty or event.destination_label or "Unlinked internal source"
+            to_label = event.source_label
+        transfer_rows.append(
+            TransferRow(
+                occurred_at=event.occurred_at,
+                asset=event.primary_asset.symbol,
+                quantity=event.primary_amount,
+                from_label=from_label,
+                to_label=to_label,
+                event_ids=[event.id],
+            )
+        )
 
     overrides = (
         session.query(Override)

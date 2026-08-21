@@ -83,6 +83,7 @@ export interface EventSummary {
   modified: boolean;
   has_open_issue: boolean;
   is_internal: boolean;
+  internal_transfer: boolean;
   linked_event_count: number;
   description: string | null;
   merchant: string | null;
@@ -367,6 +368,7 @@ export interface Issue {
   title: string;
   detail: string;
   linkable: boolean;
+  markable: boolean;
 }
 
 /* Reports */

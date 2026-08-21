@@ -49,6 +49,7 @@ def _serialize_issue(issue: Issue) -> dict:
         "title": issue.title,
         "detail": issue.detail,
         "linkable": issue.title == "Possible internal transfer",
+        "markable": issue.title == "Possible internal transfer",
     }
 
 
@@ -84,10 +85,12 @@ def _serialize_summary(
         "sek_value": valuations.get("SEK"),
         "modified": modified or any(v.manual_override for v in event.valuations),
         "has_open_issue": event.id in open_issue_ids,
-        # Best-effort: "internal" means the other side is one of your own
-        # accounts, not an external counterparty. Not a stored fact — derived
-        # each time from the current account registry (plan §90's filter).
-        "is_internal": bool(values.get("destination_label")) and values["destination_label"] in account_names,
+        # A user can explicitly classify a one-sided transfer as internal when
+        # its counterpart is outside the ledger. Keep the existing account
+        # label inference for backwards compatibility, but expose the stored
+        # classification as the durable source of truth.
+        "is_internal": event.internal_transfer or (bool(values.get("destination_label")) and values["destination_label"] in account_names),
+        "internal_transfer": event.internal_transfer,
         "description": values.get("description"),
         "merchant": values.get("merchant"),
         "tags": _event_tags(values.get("tags_json")),
@@ -628,6 +631,10 @@ class RestoreIn(BaseModel):
     reason: str | None = None
 
 
+class InternalTransferIn(BaseModel):
+    enabled: bool = True
+
+
 @router.patch("/{event_id}")
 def override_event(event_id: int, body: OverrideIn, session: Session = Depends(get_session)):
     if body.field not in EDITABLE_FIELDS:
@@ -674,6 +681,29 @@ def restore_event_value(event_id: int, field: str, body: RestoreIn, session: Ses
     session.commit()
     values, modified = effective_values(session, event)
     return {"id": event.id, "values": values, "modified": modified}
+
+
+@router.post("/{event_id}/internal-transfer")
+def set_internal_transfer(event_id: int, body: InternalTransferIn, session: Session = Depends(get_session)):
+    """Explicitly classify one event as an internal move.
+
+    A counterpart EventLink remains optional: this is for transfers where the
+    other wallet/account is not connected to this ledger, or its history is no
+    longer available from the source. The choice is persisted and therefore
+    remains stable even if account names later change.
+    """
+    event = session.get(Event, event_id)
+    if event is None:
+        raise HTTPException(404, "Event not found")
+    event.internal_transfer = body.enabled
+    if body.enabled:
+        session.query(Issue).filter(
+            Issue.event_id == event_id,
+            Issue.title == "Possible internal transfer",
+            Issue.resolved.is_(False),
+        ).update({Issue.resolved: True}, synchronize_session=False)
+    session.commit()
+    return {"id": event.id, "internal_transfer": event.internal_transfer}
 
 
 class EventLinkIn(BaseModel):

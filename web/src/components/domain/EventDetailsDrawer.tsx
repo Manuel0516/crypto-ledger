@@ -136,6 +136,46 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
     }
   };
 
+  const markIssueInternal = async (issue: Issue) => {
+    const confirmed = await confirm({
+      title: "Mark as internal transfer?",
+      message: "This will treat the event as a non-taxable move even without a linked counterpart. Only do this when you know the funds moved between accounts you control.",
+      confirmLabel: "Mark internal",
+    });
+    if (!confirmed) return;
+    setResolvingIssue(issue.id);
+    setError("");
+    try {
+      await postJson(`/api/issues/${issue.id}/mark-internal`, {});
+      await load();
+      notifyChange();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not mark this transfer internal");
+    } finally {
+      setResolvingIssue(null);
+    }
+  };
+
+  const toggleInternalTransfer = async () => {
+    if (!data?.event) return;
+    const enabled = !data.event.internal_transfer;
+    if (enabled) {
+      const confirmed = await confirm({
+        title: "Mark as internal transfer?",
+        message: "This treats the event as a non-taxable move even when no counterpart is linked. Only use it for funds moving between accounts you control.",
+        confirmLabel: "Mark internal",
+      });
+      if (!confirmed) return;
+    }
+    try {
+      await postJson(`/api/events/${eventId}/internal-transfer`, { enabled });
+      await load();
+      notifyChange();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not update the internal-transfer classification");
+    }
+  };
+
   const deleteEvent = async () => {
     if (!data?.event) return;
     const confirmed = await confirm({
@@ -222,6 +262,7 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
                     </div>
                     <div className="flex shrink-0 flex-wrap gap-2 sm:flex-col sm:items-stretch">
                       {issue.linkable && <Button size="sm" variant="accent-soft" icon={<Link2 size={13} />} onClick={() => void linkIssue(issue)} loading={resolvingIssue === issue.id} disabled={resolvingIssue !== null}>Link accounts</Button>}
+                      {issue.markable && <Button size="sm" variant="secondary" onClick={() => void markIssueInternal(issue)} loading={resolvingIssue === issue.id} disabled={resolvingIssue !== null}>Mark internal</Button>}
                       <Button size="sm" variant="secondary" onClick={() => void resolveIssue(issue)} loading={resolvingIssue === issue.id} disabled={resolvingIssue !== null && resolvingIssue !== issue.id}>Resolve issue</Button>
                     </div>
                   </div>
@@ -331,6 +372,7 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
                 <p className="mt-1 text-xs text-soft">Modify this record or permanently remove it.</p>
               </div>
               <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" onClick={() => void toggleInternalTransfer()}>{data.event.internal_transfer ? "Remove internal mark" : "Mark as internal"}</Button>
                 <Button size="sm" variant="secondary" onClick={() => setEditDialogOpen(true)} icon={<PencilLine size={14} />}>Modify activity</Button>
                 <Button size="sm" variant="danger" onClick={() => void deleteEvent()} icon={<Trash2 size={14} />} loading={deleting}>Delete activity</Button>
               </div>
