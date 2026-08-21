@@ -15,7 +15,8 @@ from app.core.assets.registry import get_or_create_asset
 from app.core.ledger.overrides import EDITABLE_FIELDS, apply_override, effective_values, restore_automatic_value
 from app.core.ledger.service import ingest, refresh_valuations
 from app.core.settings import get_or_create_settings, minimum_activity_threshold
-from app.db.models import Account, Asset, Event, EventLink, Fee, Issue, Override, RawEvent, Valuation
+from app.core.attachments.service import delete_attachment_file
+from app.db.models import Account, Asset, Attachment, Event, EventLink, Fee, Issue, Override, RawEvent, Valuation
 
 from .deps import get_session
 
@@ -298,6 +299,44 @@ def get_event(event_id: int, session: Session = Depends(get_session)):
         "original_values": {field: _base_event_value(event, field) for field in EDITABLE_FIELDS},
         "modified": modified or any(v.manual_override for v in event.valuations),
     }
+
+
+@router.delete("/{event_id}")
+def delete_event(event_id: int, session: Session = Depends(get_session)):
+    """Permanently remove one activity record and all of its owned data."""
+    event = session.get(Event, event_id)
+    if event is None:
+        raise HTTPException(404, "Event not found")
+
+    raw_event_id = event.raw_event_id
+
+    # These tables do not all have an ORM relationship back to Event, so make
+    # the ownership boundary explicit instead of leaving orphaned records.
+    session.query(Issue).filter(Issue.event_id == event_id).delete(synchronize_session=False)
+    session.query(EventLink).filter(
+        or_(EventLink.event_id == event_id, EventLink.linked_event_id == event_id)
+    ).delete(synchronize_session=False)
+
+    attachments = session.query(Attachment).filter(Attachment.event_id == event_id).all()
+    for attachment in attachments:
+        delete_attachment_file(attachment)
+    session.query(Attachment).filter(Attachment.event_id == event_id).delete(synchronize_session=False)
+
+    # Event relationships use delete-orphan cascades for these rows. Loading
+    # the event without _event_options keeps the delete lightweight while the
+    # ORM still removes the owned fees, valuations, and overrides.
+    session.delete(event)
+    session.flush()
+
+    # A connector can produce more than one canonical event from one raw
+    # payload. Keep shared evidence until its last event is gone.
+    if raw_event_id is not None and not session.query(Event).filter(Event.raw_event_id == raw_event_id).first():
+        raw_event = session.get(RawEvent, raw_event_id)
+        if raw_event is not None:
+            session.delete(raw_event)
+
+    session.commit()
+    return {"deleted": event_id}
 
 
 def _base_event_value(event: Event, field: str) -> str | None:

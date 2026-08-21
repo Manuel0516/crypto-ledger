@@ -9,6 +9,7 @@ import { Button } from "../ui/Button";
 import { Spinner } from "../ui/Button";
 import { Field, Input, Select, Textarea } from "../ui/Field";
 import { ErrorState } from "../ui/EmptyState";
+import { useConfirmDialog } from "../ui/ConfirmDialog";
 import { CryptoAmount } from "./CryptoAmount";
 import { MoneyValue } from "./MoneyValue";
 import { EventTypeBadge } from "./EventTypeBadge";
@@ -56,6 +57,8 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
   const [shownOriginalField, setShownOriginalField] = useState<string | null>(null);
   const [restoringField, setRestoringField] = useState<string | null>(null);
   const [resolvingIssue, setResolvingIssue] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const { confirm, confirmDialog } = useConfirmDialog();
 
   const load = async () => {
     setLoading(true);
@@ -133,11 +136,35 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
     }
   };
 
+  const deleteEvent = async () => {
+    if (!data?.event) return;
+    const confirmed = await confirm({
+      title: "Delete activity permanently?",
+      message: `This permanently removes ${formatType(data.event.event_type)} activity, its stored source evidence, corrections, links, valuations, and attachments. It cannot be undone. A future source sync may re-import the record.`,
+      confirmLabel: "Delete activity",
+      destructive: true,
+    });
+    if (!confirmed) return;
+
+    setDeleting(true);
+    setError("");
+    try {
+      await deleteJson(`/api/events/${eventId}`);
+      notifyChange();
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not delete this activity");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
 
   const event = data?.event;
 
   return (
-    <Drawer open onClose={onClose} title={event ? formatType(event.event_type) : "Event details"} eyebrow="Event details">
+    <>
+      <Drawer open onClose={onClose} title={event ? formatType(event.event_type) : "Event details"} eyebrow="Event details">
       {error && <ErrorState message={error} />}
       {loading && !data && (
         <div className="flex justify-center py-12 text-soft">
@@ -283,12 +310,18 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
             <p className="text-sm text-soft">{event.notes || "No notes recorded."}</p>
           </Section>
 
-          <div className="flex items-center justify-between border-t border-line pt-5">
-            <div>
-              <h4 className="font-mono text-[10px] uppercase tracking-widest text-faint">Activity correction</h4>
-              <p className="mt-1 text-xs text-soft">Original evidence is kept unchanged.</p>
+          <div className="border-t border-line pt-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h4 className="font-mono text-[10px] uppercase tracking-widest text-faint">Activity actions</h4>
+                <p className="mt-1 text-xs text-soft">Modify this record or permanently remove it.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" onClick={() => setEditDialogOpen(true)} icon={<PencilLine size={14} />}>Modify activity</Button>
+                <Button size="sm" variant="danger" onClick={() => void deleteEvent()} icon={<Trash2 size={14} />} loading={deleting}>Delete activity</Button>
+              </div>
             </div>
-            <Button size="sm" variant="secondary" onClick={() => setEditDialogOpen(true)} icon={<PencilLine size={14} />}>Modify activity</Button>
+            <p className="mt-3 text-[11px] text-bad">Permanent deletion removes this event and its stored evidence.</p>
           </div>
 
           {data.overrides.length > 0 && (
@@ -359,7 +392,9 @@ export function EventDetailsDrawer({ eventId, onClose, onChange }: EventDetailsD
         </div>
       )}
       {editDialogOpen && data && <ManualEventDialog editEvent={data} onClose={() => setEditDialogOpen(false)} onSaved={async () => { setEditDialogOpen(false); await load(); notifyChange(); }} />}
-    </Drawer>
+      </Drawer>
+      {confirmDialog}
+    </>
   );
 }
 
