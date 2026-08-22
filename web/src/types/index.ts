@@ -227,10 +227,6 @@ export type ConnectorType =
   | "exchange_import"
   | "bitcoin_address"
   | "evm_address"
-  | "solana_address"
-  | "monero_rpc"
-  | "lightning_node"
-  | "lightning_nwc"
   | "bitget_live"
   | "binance_live";
 
@@ -283,13 +279,6 @@ export interface ReconcileResult {
   status: "ok" | "unavailable" | "unsupported";
   message: string | null;
   assets: ReconciledAsset[];
-}
-
-export interface NWCPermissionsResult {
-  status: "ok" | "unavailable" | "unsupported";
-  methods: string[];
-  extra_methods: string[];
-  message: string | null;
 }
 
 export interface AppSettings {

@@ -14,10 +14,6 @@ from app.db.models import Account, Issue
 SYNCABLE_TYPES = {
     "bitcoin_address",
     "evm_address",
-    "solana_address",
-    "monero_rpc",
-    "lightning_node",
-    "lightning_nwc",
     "bitget_live",
     "binance_live",
 }

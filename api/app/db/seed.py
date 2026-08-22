@@ -306,8 +306,8 @@ def _create_accounts(session: Session) -> dict[str, Account]:
             status="connected", address=_ETH_ADDR, wallet_software="MetaMask", note="Browser wallet · auto-sync paused for this demo", last_sync=now,
         ),
         "phantom": Account(
-            name="Phantom · Solana", kind="wallet", connector_type="solana_address", status="connected", paused=True,
-            address=_SOL_ADDR, wallet_software="Phantom", note="Browser wallet · auto-sync paused for this demo", last_sync=now,
+            name="Phantom · Solana", kind="wallet", connector_type="manual", status="connected", paused=True,
+            address=_SOL_ADDR, wallet_software="Phantom", note="Tracked by hand · no live Solana sync in this demo", last_sync=now,
         ),
         "manual": Account(name="Manual entries", kind="manual", connector_type="manual", status="connected"),
     }

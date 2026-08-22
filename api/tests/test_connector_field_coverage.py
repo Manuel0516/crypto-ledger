@@ -14,54 +14,9 @@ from app.connectors.base import ConnectorUnavailable, RawRecord
 from app.connectors.binance.live import BinanceLiveConnector, _ms, _seconds
 from app.connectors.bitget import BitgetConnector, BitgetLiveConnector
 from app.connectors.bitget.live import _is_additional_margin_financial, _is_additional_uta_financial
-from app.connectors.lightning import LightningConnector
-from app.connectors.solana import SolanaAddressConnector
 
 
 OCCURRED_AT = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
-SOLANA_OWN = "Own11111111111111111111111111111111111111111"
-SOLANA_OTHER = "Other111111111111111111111111111111111111111"
-SOLANA_MINT = "Mint11111111111111111111111111111111111111111"
-
-
-def _solana_tx(*, outgoing: bool = False, token: bool = False) -> dict:
-    if token:
-        return {
-            "slot": 123,
-            "transaction": {"message": {"accountKeys": [{"pubkey": SOLANA_OTHER}, {"pubkey": SOLANA_OWN}]}},
-            "meta": {
-                "fee": 5000,
-                "preBalances": [1_000_000_000, 1_000_000_000],
-                "postBalances": [1_000_000_000, 1_000_000_000],
-                "preTokenBalances": [
-                    {"accountIndex": 0, "mint": SOLANA_MINT, "owner": SOLANA_OTHER, "uiTokenAmount": {"amount": "2000000", "decimals": 6}},
-                    {"accountIndex": 1, "mint": SOLANA_MINT, "owner": SOLANA_OWN, "uiTokenAmount": {"amount": "0", "decimals": 6}},
-                ],
-                "postTokenBalances": [
-                    {"accountIndex": 0, "mint": SOLANA_MINT, "owner": SOLANA_OTHER, "uiTokenAmount": {"amount": "1000000", "decimals": 6}},
-                    {"accountIndex": 1, "mint": SOLANA_MINT, "owner": SOLANA_OWN, "uiTokenAmount": {"amount": "1000000", "decimals": 6}},
-                ],
-            },
-        }
-
-    if outgoing:
-        pre = [2_000_000_000, 1_000_000_000]
-        post = [1_899_995_000, 1_100_000_000]
-    else:
-        pre = [1_000_000_000, 1_000_000_000]
-        post = [900_000_000, 1_100_000_000]
-    account_keys = [
-        {"pubkey": SOLANA_OWN},
-        {"pubkey": SOLANA_OTHER},
-    ] if outgoing else [
-        {"pubkey": SOLANA_OTHER},
-        {"pubkey": SOLANA_OWN},
-    ]
-    return {
-        "slot": 123,
-        "transaction": {"message": {"accountKeys": account_keys}},
-        "meta": {"fee": 5000, "preBalances": pre, "postBalances": post},
-    }
 
 
 class ConnectorFieldCoverageTests(unittest.TestCase):
@@ -96,47 +51,6 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
         with patch("app.connectors.binance.live.httpx.get", return_value=response):
             with self.assertRaisesRegex(ConnectorUnavailable, r"non-JSON response.*account"):
                 connector._signed_get("https://api.binance.com", "/api/v3/account")
-
-    def test_lightning_all_event_kinds_keep_their_structured_evidence(self) -> None:
-        connector = LightningConnector("http://lnd", "00", "Lightning")
-        cases = [
-            ("payment", {"payment_hash": "payment-hash", "value_msat": "1000"}, "payment-hash"),
-            ("invoice", {"r_hash": "invoice-hash", "value_msat": "1000"}, "invoice-hash"),
-            ("channel_open", {"channel_point": "funding-hash:0", "capacity": "1000"}, "funding-hash"),
-            ("channel_close", {"closing_tx_hash": "closing-hash", "settled_balance": "1000"}, "closing-hash"),
-        ]
-        for kind, payload, expected_hash in cases:
-            with self.subTest(kind=kind):
-                payload["_kind"] = kind
-                event = connector.normalize(RawRecord("lightning", kind, OCCURRED_AT, payload))
-                self.assertEqual(event.tx_hash, expected_hash)
-
-    def test_solana_native_and_token_events_populate_both_address_sides(self) -> None:
-        connector = SolanaAddressConnector(SOLANA_OWN, "Solana")
-
-        incoming = connector.normalize(
-            RawRecord("solana:wallet", "native-in", OCCURRED_AT, {"tx": _solana_tx(), "_leg": "native"})
-        )
-        self.assertEqual(incoming.address_from, SOLANA_OTHER)
-        self.assertEqual(incoming.address_to, SOLANA_OWN)
-
-        outgoing = connector.normalize(
-            RawRecord("solana:wallet", "native-out", OCCURRED_AT, {"tx": _solana_tx(outgoing=True), "_leg": "native"})
-        )
-        self.assertEqual(outgoing.address_from, SOLANA_OWN)
-        self.assertEqual(outgoing.address_to, SOLANA_OTHER)
-
-        token = connector.normalize(
-            RawRecord(
-                "solana:wallet",
-                f"token-in-token-{SOLANA_MINT}",
-                OCCURRED_AT,
-                {"tx": _solana_tx(token=True), "_leg": "token", "_mint": SOLANA_MINT, "_net": 1_000_000, "_decimals": 6},
-            )
-        )
-        self.assertEqual(token.address_from, SOLANA_OTHER)
-        self.assertEqual(token.address_to, SOLANA_OWN)
-        self.assertEqual(token.tx_hash, "token-in")
 
     def test_binance_trade_has_quote_leg_and_income_evidence(self) -> None:
         connector = BinanceLiveConnector("key", "secret", "Binance")

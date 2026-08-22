@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import io
 import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from zipfile import ZipFile
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -18,7 +16,6 @@ from app.api.events import EventLinkIn, OverrideIn, RestoreIn, create_event_link
 from app.connectors.base import RawRecord
 from app.connectors.manual import ManualConnector
 from app.core.ledger.service import ingest
-from app.core.reporting.evidence import export_evidence_archive, verify_evidence_archive
 from app.db.models import Base
 
 
@@ -81,19 +78,13 @@ class ActivityAuditTests(unittest.TestCase):
         self.assertEqual(detail["raw"]["payload"]["description"], "Invoice settlement")
         self.assertEqual(before_payload, event.raw_event.payload_json)
 
-    def test_links_and_integrity_archive_are_auditable(self) -> None:
+    def test_links_between_events_are_auditable(self) -> None:
         first = self._event("event-1", event_type="WITHDRAWAL", amount="-1")
         second = self._event("event-2", event_type="DEPOSIT", amount="1")
         create_event_link(first.id, EventLinkIn(linked_event_id=second.id, relationship_type="INTERNAL_TRANSFER"), self.session)
         detail = get_event(second.id, self.session)
         self.assertEqual(detail["links"][0]["event_id"], first.id)
         self.assertEqual(detail["links"][0]["relationship_type"], "INTERNAL_TRANSFER")
-
-        archive = export_evidence_archive(self.session)
-        self.assertTrue(verify_evidence_archive(archive)["valid"])
-        with ZipFile(io.BytesIO(archive)) as zip_file:
-            self.assertIn("integrity/hashes.csv", zip_file.namelist())
-            self.assertIn("integrity/manifest.json", zip_file.namelist())
 
 
 if __name__ == "__main__":

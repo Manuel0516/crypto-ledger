@@ -3,8 +3,6 @@ import {
   ExchangeBinance,
   ExchangeBitget,
   NetworkBitcoin,
-  NetworkSolana,
-  TokenXMR,
   WalletMetamask,
 } from "@web3icons/react";
 import { ChevronDown, ChevronUp, Plus, WalletCards } from "lucide-react";
@@ -45,8 +43,6 @@ function ConnectorTypeIcon({ type, glyph }: { type: ConnectorType; glyph: string
   }
   if (type === "bitcoin_address") return <NetworkBitcoin {...iconProps} />;
   if (type === "evm_address") return <WalletMetamask {...iconProps} />;
-  if (type === "solana_address") return <NetworkSolana {...iconProps} />;
-  if (type === "monero_rpc") return <TokenXMR {...iconProps} />;
   if (type === "manual") return <span className="grid size-full place-items-center text-sm font-bold">{glyph}</span>;
   return <span className="grid size-full place-items-center text-sm font-bold">{glyph}</span>;
 }
@@ -210,46 +206,13 @@ interface SourceForm {
   explorer_api_url: string;
   bsc_token_contracts: string;
   address: string;
-  host: string;
-  port: string;
-  username: string;
-  password: string;
-  macaroon: string;
   exchange_mode: "import" | "live";
   exchange_provider: "bitget" | "binance";
   api_key: string;
   api_secret: string;
   passphrase: string;
   symbols: string;
-  lightning_provider: "nwc" | "node";
-  nwc_wallet: "zeus" | "alby_hub" | "other";
-  nwc_connection_string: string;
 }
-
-// NWC is one generic protocol — this is UI convenience only (a default
-// name + wallet-specific "where do I get this string" instructions), never
-// a code branch: every option here produces the exact same connector_type
-// ("lightning_nwc") and is handled by the identical backend connector.
-const NWC_WALLETS: { id: "zeus" | "alby_hub" | "other"; label: string; walletSoftware: string; instructions: string }[] = [
-  {
-    id: "zeus",
-    label: "ZEUS",
-    walletSoftware: "ZEUS",
-    instructions: "In ZEUS: Settings → Nostr Wallet Connect → Add connection. Read-only scopes recommended if offered.",
-  },
-  {
-    id: "alby_hub",
-    label: "Alby Hub",
-    walletSoftware: "Alby Hub",
-    instructions: "In Alby Hub: Connections → Add Connection → name it, then uncheck any send/pay permission (keep read balance + transaction history) → Next, then copy the pairing secret.",
-  },
-  {
-    id: "other",
-    label: "Other NWC wallet",
-    walletSoftware: "",
-    instructions: "Any NIP-47-compliant wallet works the same way — look for \"Nostr Wallet Connect\" in its settings and copy the connection string it gives you.",
-  },
-];
 
 const EMPTY_FORM: SourceForm = {
   name: "",
@@ -265,20 +228,12 @@ const EMPTY_FORM: SourceForm = {
   explorer_api_url: "",
   bsc_token_contracts: "",
   address: "",
-  host: "127.0.0.1",
-  port: "18082",
-  username: "",
-  password: "",
-  macaroon: "",
   exchange_mode: "live",
   exchange_provider: "bitget",
   api_key: "",
   api_secret: "",
   passphrase: "",
   symbols: "",
-  lightning_provider: "nwc",
-  nwc_wallet: "zeus",
-  nwc_connection_string: "",
 };
 
 function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps) {
@@ -292,7 +247,6 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
   const change = (field: keyof SourceForm, value: string) => setForm((current) => ({ ...current, [field]: value }));
 
   const isLiveExchange = type === "exchange_import" && form.exchange_mode === "live";
-  const isNwcLightning = type === "lightning_node" && form.lightning_provider === "nwc";
 
   const save = async () => {
     if (!type) return;
@@ -300,18 +254,14 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
     setError("");
     setWarning("");
     try {
-      const connectorType = isLiveExchange ? `${form.exchange_provider}_live` : isNwcLightning ? "lightning_nwc" : type;
+      const connectorType = isLiveExchange ? `${form.exchange_provider}_live` : type;
       const body: Record<string, unknown> = {
         name: form.name,
         connector_type: connectorType,
-        // The wallet (ZEUS, Alby Hub, ...) is UI metadata, NWC is the
-        // protocol — wallet_software stays free text (not folded into
-        // connector_type) so every NWC wallet works identically; default it
-        // to whichever quick-pick was chosen, but let the user override it.
-        wallet_software: form.wallet_software || (isNwcLightning ? NWC_WALLETS.find((w) => w.id === form.nwc_wallet)?.walletSoftware || null : null),
+        wallet_software: form.wallet_software || null,
         note: form.note || null,
       };
-      if (type === "bitcoin_address" || type === "solana_address") {
+      if (type === "bitcoin_address") {
         body.address = form.address;
       }
       if (type === "evm_address") {
@@ -333,15 +283,6 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
           if (contracts.length > 0) config.bsc_token_contracts = contracts;
           if (Object.keys(config).length > 0) body.config = config;
         }
-      }
-      if (type === "monero_rpc") {
-        body.config = { host: form.host, port: form.port, username: form.username || undefined, password: form.password || undefined };
-      }
-      if (type === "lightning_node" && form.lightning_provider === "node") {
-        body.config = { host: form.host, macaroon: form.macaroon };
-      }
-      if (isNwcLightning) {
-        body.config = { connection_string: form.nwc_connection_string };
       }
       if (isLiveExchange && form.exchange_provider === "bitget") {
         body.config = { api_key: form.api_key, api_secret: form.api_secret, passphrase: form.passphrase };
@@ -379,7 +320,7 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
       // fail (bad credentials, a source-side rate limit, network trouble) —
       // await it and say so, rather than silently leaving a "connected"-
       // looking account with no history and no explanation.
-      if (isLiveExchange || isNwcLightning || ["bitcoin_address", "evm_address", "solana_address"].includes(type)) {
+      if (isLiveExchange || ["bitcoin_address", "evm_address"].includes(type)) {
         try {
           const result = await postJson<SyncResult>(`/api/accounts/${createdAccount.id}/backfill`, {});
           if (result.status !== "ok") {
@@ -409,15 +350,9 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
             form.api_secret.trim().length > 0 &&
             (form.exchange_provider !== "bitget" || form.passphrase.trim().length > 0)
           : true
-        : type === "bitcoin_address" || type === "solana_address" || type === "evm_address"
+        : type === "bitcoin_address" || type === "evm_address"
           ? form.address.trim().length > 0 && (type !== "evm_address" || form.chain_network !== "custom" || (form.chain_id.trim().length > 0 && form.network_name.trim().length > 0))
-          : type === "monero_rpc"
-            ? form.host.trim().length > 0 && form.port.trim().length > 0
-            : type === "lightning_node"
-              ? form.lightning_provider === "nwc"
-                ? form.nwc_connection_string.trim().length > 0
-                : form.host.trim().length > 0 && form.macaroon.trim().length > 0
-              : false);
+          : false);
 
   return (
     <Dialog
@@ -482,13 +417,13 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
                 </p>
                 <div className="mt-3 grid gap-4 sm:grid-cols-2">
                   <Field label="Asset symbol" htmlFor="acc-initial-symbol">
-                    <Input id="acc-initial-symbol" value={form.initial_symbol} onChange={(e) => change("initial_symbol", e.target.value.toUpperCase())} placeholder="XMR" />
+                    <Input id="acc-initial-symbol" value={form.initial_symbol} onChange={(e) => change("initial_symbol", e.target.value.toUpperCase())} placeholder="BTC" />
                   </Field>
                   <Field label="Initial amount" htmlFor="acc-initial-amount" hint="Enter a positive amount">
                     <Input id="acc-initial-amount" value={form.initial_amount} onChange={(e) => change("initial_amount", e.target.value)} placeholder="10.5" inputMode="decimal" />
                   </Field>
                   <Field label="Network (optional)" htmlFor="acc-initial-network" className="sm:col-span-2" hint="Useful for tokens or assets sharing a symbol">
-                    <Input id="acc-initial-network" value={form.initial_network} onChange={(e) => change("initial_network", e.target.value)} placeholder="Monero, Ethereum…" />
+                    <Input id="acc-initial-network" value={form.initial_network} onChange={(e) => change("initial_network", e.target.value)} placeholder="Ethereum, Bitcoin…" />
                   </Field>
                 </div>
               </div>
@@ -556,12 +491,6 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
               </Field>
             )}
 
-            {type === "solana_address" && (
-              <Field label="Address" htmlFor="acc-address" className="sm:col-span-2" hint="Public address only — never a seed phrase or private key.">
-                <Input id="acc-address" value={form.address} onChange={(e) => change("address", e.target.value)} placeholder="Public address" />
-              </Field>
-            )}
-
             {type === "evm_address" && (
               <>
                 <Field label="Address" htmlFor="acc-address" hint="Never a seed phrase or private key.">
@@ -615,85 +544,6 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
               </>
             )}
 
-            {type === "monero_rpc" && (
-              <>
-                <Field label="Wallet-rpc host" htmlFor="acc-host">
-                  <Input id="acc-host" value={form.host} onChange={(e) => change("host", e.target.value)} placeholder="127.0.0.1" />
-                </Field>
-                <Field label="Port" htmlFor="acc-port">
-                  <Input id="acc-port" value={form.port} onChange={(e) => change("port", e.target.value)} placeholder="18082" />
-                </Field>
-                <Field label="RPC username" htmlFor="acc-user" hint="Optional">
-                  <Input id="acc-user" value={form.username} onChange={(e) => change("username", e.target.value)} placeholder="Optional" />
-                </Field>
-                <Field label="RPC password" htmlFor="acc-pass" hint="Optional, stored encrypted">
-                  <Input id="acc-pass" type="password" value={form.password} onChange={(e) => change("password", e.target.value)} placeholder="Optional" />
-                </Field>
-              </>
-            )}
-
-            {type === "lightning_node" && (
-              <div className="sm:col-span-2 space-y-4">
-                <div className="inline-flex rounded-lg bg-base p-1">
-                  {(["nwc", "node"] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      onClick={() => change("lightning_provider", mode)}
-                      className={
-                        form.lightning_provider === mode
-                          ? "rounded-md bg-surface px-3 py-1.5 text-xs font-semibold text-ink shadow-sm"
-                          : "rounded-md px-3 py-1.5 text-xs font-medium text-soft hover:text-ink"
-                      }
-                    >
-                      {mode === "nwc" ? "NWC wallet" : "Your own LND node"}
-                    </button>
-                  ))}
-                </div>
-
-                {isNwcLightning ? (
-                  <div className="space-y-4">
-                    <div className="flex flex-wrap gap-2">
-                      {NWC_WALLETS.map((wallet) => (
-                        <button
-                          key={wallet.id}
-                          onClick={() => change("nwc_wallet", wallet.id)}
-                          className={
-                            form.nwc_wallet === wallet.id
-                              ? "rounded-full bg-accent-soft px-3 py-1 text-xs font-semibold text-accent"
-                              : "rounded-full border border-line px-3 py-1 text-xs font-medium text-soft hover:text-ink"
-                          }
-                        >
-                          {wallet.label}
-                        </button>
-                      ))}
-                    </div>
-                    <Field
-                      label="NWC connection string"
-                      htmlFor="acc-nwc-uri"
-                      hint={NWC_WALLETS.find((w) => w.id === form.nwc_wallet)?.instructions}
-                    >
-                      <Textarea
-                        id="acc-nwc-uri"
-                        rows={3}
-                        value={form.nwc_connection_string}
-                        onChange={(e) => change("nwc_connection_string", e.target.value)}
-                        placeholder="nostr+walletconnect://…"
-                      />
-                    </Field>
-                  </div>
-                ) : (
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <Field label="Node REST host" htmlFor="acc-host" className="sm:col-span-2" hint="e.g. https://localhost:8080">
-                      <Input id="acc-host" value={form.host} onChange={(e) => change("host", e.target.value)} placeholder="https://localhost:8080" />
-                    </Field>
-                    <Field label="Macaroon (hex)" htmlFor="acc-macaroon" className="sm:col-span-2" hint="Stored encrypted. Read-only macaroon recommended.">
-                      <Textarea id="acc-macaroon" rows={2} value={form.macaroon} onChange={(e) => change("macaroon", e.target.value)} placeholder="0201036c6e64…" />
-                    </Field>
-                  </div>
-                )}
-              </div>
-            )}
-
             <Field label="Wallet software" htmlFor="acc-software" className="sm:col-span-2" hint="Interfaces are not ownership — MetaMask → Rabby is the same account.">
               <Input id="acc-software" value={form.wallet_software} onChange={(e) => change("wallet_software", e.target.value)} placeholder="Optional — Cake, Exodus, MetaMask…" />
             </Field>
@@ -714,25 +564,6 @@ function AddSourceDialog({ onClose, onCreated, onRefresh }: AddSourceDialogProps
               on the interval set in Settings → Synchronization.
             </p>
           )}
-          {type === "monero_rpc" && (
-            <p className="rounded-lg bg-warn-soft px-3 py-2.5 text-[11px] text-warn">
-              Requires a monero-wallet-rpc daemon reachable at this host/port — ideally view-only.
-            </p>
-          )}
-          {type === "lightning_node" && !isNwcLightning && (
-            <p className="rounded-lg bg-warn-soft px-3 py-2.5 text-[11px] text-warn">
-              Requires your own LND node reachable at this host, with a macaroon that can read payments/invoices/channels.
-            </p>
-          )}
-          {isNwcLightning && (
-            <p className="rounded-lg bg-base px-3 py-2.5 text-[11px] text-soft">
-              Read-only by design — this app only ever requests balance and transaction history over NWC, never a
-              payment-capable method. If your connection also grants payment permissions, we'll flag that after
-              connecting, but we still never use them. After registering, this source pulls its recent history
-              immediately, then keeps checking automatically on the interval set in Settings → Synchronization.
-            </p>
-          )}
-
           {warning && <p className="rounded-lg bg-warn-soft px-3 py-2 text-xs text-warn">{warning}</p>}
           {error && <p className="rounded-lg bg-bad-soft px-3 py-2 text-xs text-bad">{error}</p>}
         </div>
@@ -753,12 +584,6 @@ function placeholderName(type: ConnectorType): string {
       return "Cold storage";
     case "evm_address":
       return "MetaMask · Ethereum";
-    case "solana_address":
-      return "Phantom";
-    case "monero_rpc":
-      return "Monero wallet";
-    case "lightning_node":
-      return "Lightning node";
     default:
       return "Cold wallet";
   }

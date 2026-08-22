@@ -1,6 +1,6 @@
 <h1><img src="web/public/crypto-ledger-favicon.svg" alt="" width="44" height="44" align="absmiddle"> Crypto Ledger</h1>
 
-An evidence-first crypto portfolio, activity, reporting, and tax workspace. Crypto Ledger keeps a durable local ledger from connected exchanges, wallets, nodes, and manual entries, then lets you review, correct, export, back up, and report on that history without making a tax package the source of truth.
+An evidence-first crypto portfolio, activity, reporting, and tax workspace. Crypto Ledger keeps a durable local ledger from connected exchanges, wallet addresses, and manual entries, then lets you review, correct, export, back up, and report on that history without making a tax package the source of truth.
 
 > **Project status:** beta release candidate `v0.2.0-beta.1`. The application is usable locally and suitable for evaluation or self-hosted testing, but APIs, database migrations, tax integrations, and UI details may still evolve before a stable release.
 
@@ -12,8 +12,8 @@ An evidence-first crypto portfolio, activity, reporting, and tax workspace. Cryp
 - Flags incomplete or conflicting events and provides review, linking, valuation, fee, and issue-resolution workflows.
 - Supports activity pagination, filters, event detail, manual adjustments, and account-level synchronization/backfill controls.
 - Values events in configurable display and quote currencies using the configured price provider.
-- Produces ledger CSV, accountant PDF, evidence archives, tax CSV, and optional RP2-oriented outputs.
-- Provides encrypted backups, backup verification, restore, download, and evidence-archive import flows.
+- Produces ledger CSV, accountant PDF, tax CSV, and optional RP2-oriented outputs.
+- Provides encrypted backups with verification, restore, and download.
 - Keeps operational settings in the Settings page: currencies, price-provider credentials, synchronization, backups, security, data, tax integrations, and advanced options.
 - Includes a demo mode for exploring the product with synthetic history.
 
@@ -84,7 +84,6 @@ The current connector surface includes:
 - Bitget and Binance exchange accounts.
 - Bitcoin addresses.
 - EVM addresses across Ethereum, Arbitrum, Base, Polygon, Optimism, Avalanche C-Chain, BNB Smart Chain, and configured EVM networks.
-- Solana addresses.
 - Manual activity and adjustment entries.
 - Wallet-software metadata such as MetaMask, Rabby, Cake, Exodus, and Phantom.
 
@@ -182,7 +181,7 @@ Before importing real history or changing encryption configuration:
 4. Verify the archive before relying on it for recovery.
 5. Test restore with a disposable database before a production recovery.
 
-An evidence archive is useful when transferring source material or preserving a review package. It is not a replacement for an encrypted full backup. Treat exported archives, CSV files, PDFs, and downloaded reports as sensitive financial records.
+Treat exported CSV files, PDFs, and downloaded reports as sensitive financial records.
 
 ## RP2 integration and licensing boundary
 
@@ -216,7 +215,7 @@ The FastAPI service currently groups endpoints by domain:
 | Issues | List, resolve, and link account issues |
 | Backups | List, run, upload, verify, download, and restore |
 | Settings | Read, patch, reset, status, and secret inventory operations |
-| Reports | Readiness, ledger CSV, evidence ZIP, accountant PDF, and evidence verification/import |
+| Reports | Readiness, ledger CSV, and accountant PDF |
 | Tax | Countries, languages, readiness, reports, PDF/CSV outputs, and RP2 outputs |
 | Attachments and prices | Evidence attachments and configured price-provider lookups |
 
@@ -264,7 +263,7 @@ api/.venv/bin/python scripts/verify_migrations.py
 - [x] Confirm `.env` and local databases/backups are ignored and absent from the release archive.
 - [x] Run the web build and API test suite.
 - [x] Run a migration check against a fresh database and a representative persisted fixture (`scripts/verify_migrations.py`).
-- [x] Verify backup, download, archive verification, and restore flows (`scripts/verify_release.py`).
+- [x] Verify backup, download, and restore flows plus exchange import (`scripts/verify_release.py`).
 - [ ] Review screenshots/videos for secrets, addresses, filesystem paths, and personal information.
 - [x] Recheck all bundled third-party notices and licenses, especially optional RP2/plugin packages.
 - [ ] Set `DEMO_MODE=false` for a real deployment and configure secrets through the deployment environment or Settings.

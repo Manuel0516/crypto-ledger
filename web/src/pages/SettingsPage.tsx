@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Archive, BadgeDollarSign, Check, ChevronDown, Database, Eye, EyeOff, FileText, HardDrive, KeyRound, Languages, Pencil, Plus, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, TimerReset, Trash2, Waypoints } from "lucide-react";
+import { BadgeDollarSign, Check, ChevronDown, Database, Eye, EyeOff, FileText, HardDrive, KeyRound, Languages, Pencil, Plus, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, TimerReset, Trash2, Waypoints } from "lucide-react";
 import type { Account, AppSettings, AssetVisibility, Page, SecretInventoryItem, SyncResult, TaxCountry, TaxLanguage } from "../types";
 import { API_BASE, deleteJson, getJson, patchJson, postJson, triggerDownload } from "../lib/api";
 import { Card, CardHeader } from "../components/ui/Card";
@@ -213,7 +213,7 @@ function DataSection() {
     }
   };
   return <div className="max-w-3xl space-y-4">
-    <Card><CardHeader eyebrow="Portability" title="Exports and evidence" subtitle="Your financial history remains portable even if this app is no longer maintained." /><div className="flex flex-wrap gap-2.5"><Button size="sm" icon={<FileText size={14} />} onClick={() => triggerDownload("/api/export/ledger.csv")}>Full ledger CSV</Button><Button size="sm" icon={<Archive size={14} />} onClick={() => triggerDownload("/api/export/evidence.zip")}>Evidence archive</Button></div></Card>
+    <Card><CardHeader eyebrow="Portability" title="Exports" subtitle="Your financial history remains portable even if this app is no longer maintained." /><div className="flex flex-wrap gap-2.5"><Button size="sm" icon={<FileText size={14} />} onClick={() => triggerDownload("/api/export/ledger.csv")}>Full ledger CSV</Button></div></Card>
     <Card>
       <CardHeader eyebrow="Asset visibility" title="Blocked assets" subtitle="Use this for unsolicited tokens and contract spam. Blocking is reversible and does not delete ledger evidence." />
       {loading ? <p className="text-xs text-soft">Loading assets…</p> : (assets ?? []).length === 0 ? <p className="text-xs text-soft">No assets have been recorded yet.</p> : <div className="max-h-[32rem] divide-y divide-line overflow-y-auto rounded-lg border border-line">{(assets ?? []).map((asset) => <div key={asset.id} className="flex items-center gap-3 px-3 py-3"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-ink">{asset.symbol}</p>{asset.is_blocked && <Badge tone="warning">Blocked</Badge>}{asset.spam_suspected && <Badge tone="info">Mass distribution signal</Badge>}</div><p className="mt-0.5 truncate text-xs text-soft">{asset.name}{asset.network ? ` · ${asset.network}` : ""}{asset.contract_address ? ` · ${asset.contract_address}` : ""}</p><p className="mt-0.5 text-[11px] text-faint">{asset.event_count} recorded event{asset.event_count === 1 ? "" : "s"}</p></div><Button size="sm" variant={asset.is_blocked ? "secondary" : "ghost"} loading={busy === asset.id} onClick={() => void toggleAsset(asset)}>{asset.is_blocked ? "Unblock" : "Block"}</Button></div>)}</div>}

@@ -1,4 +1,3 @@
-import { EvidenceVerifier } from "../components/domain/EvidenceVerifier";
 import { TaxSection } from "../features/tax/TaxSection";
 
 interface ReportsPageProps {
@@ -14,11 +13,6 @@ export function ReportsPage({ onOpenEvent }: ReportsPageProps) {
       </p>
 
       <TaxSection onOpenEvent={onOpenEvent} />
-
-      <section className="max-w-2xl">
-        <EvidenceVerifier />
-      </section>
-
     </div>
   );
 }

@@ -41,12 +41,10 @@ def main() -> None:
         os.environ["BACKUP_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 
         from app.api.imports import import_bitget
-        from app.api.reports import import_evidence
         from app.connectors.base import RawRecord
         from app.connectors.manual import ManualConnector
         from app.core.backup.service import backup_bytes, create_backup, import_backup, restore_backup, verify_backup
         from app.core.ledger.service import ingest
-        from app.core.reporting.evidence import export_evidence_archive, verify_evidence_archive
         from app.db.models import Account, Base
 
         engine = create_engine(os.environ["DATABASE_URL"])
@@ -90,10 +88,6 @@ def main() -> None:
                 price_currencies=(),
             )
             session.commit()
-            evidence = export_evidence_archive(session)
-            assert verify_evidence_archive(evidence)["valid"], "evidence archive did not verify"
-            imported_evidence = asyncio.run(import_evidence(_Upload(evidence)))
-            assert imported_evidence["ready_for_review"], "evidence import was rejected"
 
             bitget_result = asyncio.run(
                 import_bitget(

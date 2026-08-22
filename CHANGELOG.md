@@ -2,6 +2,18 @@
 
 All notable Crypto Ledger changes are recorded here. This project is currently in beta; releases may include schema, connector, tax, and UI changes that require review before production use.
 
+## [Unreleased]
+
+### Removed
+
+- Solana, Lightning (LND/NWC), and Monero connectors and their tests and documentation; existing accounts of these types remain in the database but no longer sync.
+- The evidence-archive subsystem: `/api/reports/evidence.zip`, evidence verification/import endpoints, and the Reports-page verifier. Raw per-event evidence storage is unchanged.
+
+### Changed
+
+- Demo history's Phantom wallet is now a manually tracked account instead of a live Solana source.
+- README reflects the reduced source and export surface.
+
 ## [v0.2.0-beta.1] — 2026-08-21
 
 ### Added

@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.connectors.base import ConnectorUnavailable
 from app.connectors.evm.connector import CHAINS
 from app.core.ledger.connectors import build_connector
 from app.core.ledger.reconcile import ReconcileResult, reconcile_account
@@ -22,16 +21,14 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 _EVM_ADDRESS = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
-# connector_type -> coarse UI grouping kind. Lightning and Monero are
-# deliberately not addable here (too complex for this app's current scope) —
-# any account created before this restriction keeps working via
-# build_connector, this only blocks creating new ones.
+# connector_type -> coarse UI grouping kind. Sources beyond this set are
+# deliberately not addable — any account created before this restriction
+# keeps working via build_connector, this only blocks creating new ones.
 _DEFAULT_KIND = {
     "manual": "manual",
     "exchange_import": "exchange",
     "bitcoin_address": "wallet",
     "evm_address": "wallet",
-    "solana_address": "wallet",
     "bitget_live": "exchange",
     "binance_live": "exchange",
 }
@@ -294,27 +291,6 @@ def reconcile(account_id: int, session: Session = Depends(get_session)):
     result = reconcile_account(session, account)
     session.commit()
     return _serialize_reconcile(result)
-
-
-@router.get("/{account_id}/nwc-permissions")
-def nwc_permissions(account_id: int, session: Session = Depends(get_session)):
-    """Live-queries an NWC connection's own reported permissions (NIP-47
-    get_info) — this app never uses payment-capable methods regardless of
-    what's granted; this endpoint exists only to show the user what their
-    connection actually allows, same info the sync-time check flags as an
-    Issue if it includes more than read access."""
-    account = session.get(Account, account_id)
-    if account is None:
-        raise HTTPException(404, "Account not found")
-    connector = build_connector(account, session)
-    permissions_fn = getattr(connector, "permissions", None) if connector else None
-    if permissions_fn is None:
-        return {"status": "unsupported", "methods": [], "extra_methods": [], "message": "This source doesn't report NWC permissions."}
-    try:
-        result = permissions_fn()
-    except ConnectorUnavailable as exc:
-        return {"status": "unavailable", "methods": [], "extra_methods": [], "message": str(exc)}
-    return {"status": "ok", "methods": result.methods, "extra_methods": result.extra_methods, "message": None}
 
 
 @router.post("/{account_id}/pause")

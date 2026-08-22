@@ -228,9 +228,8 @@ export function TaxSection({ onOpenEvent }: TaxSectionProps) {
       {/* Universal exports */}
       <section>
         <h3 className="mb-3 font-mono text-[10px] uppercase tracking-widest text-faint">Universal exports</h3>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2">
           <ExportRow icon={<FileSpreadsheet size={19} />} title="Full Ledger CSV" text="Every event, fee, valuation, and override — jurisdiction-neutral." onDownload={() => triggerDownload("/api/export/ledger.csv")} />
-          <ExportRow icon={<FileText size={19} />} title="Evidence Archive" text="Raw payloads, prices, accounts, overrides, and integrity hashes." onDownload={() => triggerDownload(activeReport ? `/api/export/evidence.zip?report_id=${activeReport.id}` : "/api/export/evidence.zip")} />
           <ExportRow icon={<FileText size={19} />} title="Accountant PDF" text="Jurisdiction-neutral ledger summary — no country's tax rules applied." onDownload={() => triggerDownload(`/api/export/accountant.pdf?language=${language}`)} />
         </div>
       </section>

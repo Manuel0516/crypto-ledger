@@ -4,10 +4,6 @@ from app.connectors.binance import BinanceLiveConnector
 from app.connectors.bitcoin import BitcoinAddressConnector, BitcoinXpubConnector, looks_like_extended_key
 from app.connectors.bitget import BitgetLiveConnector
 from app.connectors.evm import EVMAddressConnector
-from app.connectors.lightning import LightningConnector
-from app.connectors.lightning.nwc import NWCConnector
-from app.connectors.monero import MoneroConnector
-from app.connectors.solana import SolanaAddressConnector
 from app.core.settings import explorer_api_keys
 from app.db.models import Account, AppSettings
 from app.security.secrets import decrypt_config
@@ -35,23 +31,6 @@ def build_connector(account: Account, session=None):
             if (account.chain_network or "") == "bsc":
                 config.setdefault("bsc_trace_api_key", global_keys.get("bsc_trace"))
         return EVMAddressConnector(account.address or "", account.name, chain=account.chain_network or "ethereum", config=config)
-    if account.connector_type == "solana_address":
-        return SolanaAddressConnector(account.address, account.name)
-    if account.connector_type == "monero_rpc":
-        config = decrypt_config(account.config_encrypted) if account.config_encrypted else {}
-        return MoneroConnector(
-            config.get("host", "127.0.0.1"),
-            int(config.get("port", 18082)),
-            account.name,
-            username=config.get("username") or None,
-            password=config.get("password") or None,
-        )
-    if account.connector_type == "lightning_node":
-        config = decrypt_config(account.config_encrypted) if account.config_encrypted else {}
-        return LightningConnector(config.get("host", ""), config.get("macaroon", ""), account.name)
-    if account.connector_type == "lightning_nwc":
-        config = decrypt_config(account.config_encrypted) if account.config_encrypted else {}
-        return NWCConnector(config.get("connection_string", ""), account.name)
     if account.connector_type == "bitget_live":
         config = decrypt_config(account.config_encrypted) if account.config_encrypted else {}
         return BitgetLiveConnector(config.get("api_key", ""), config.get("api_secret", ""), config.get("passphrase", ""), account.name)

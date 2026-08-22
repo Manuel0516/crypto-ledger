@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, Check, History, Pause, Pencil, Play, RefreshCw, Trash2, Upload, WalletCards, X } from "lucide-react";
-import type { Account, NWCPermissionsResult, Page, ReconcileResult, SyncResult } from "../../types";
+import { useRef, useState } from "react";
+import { Archive, ArchiveRestore, History, Pause, Pencil, Play, RefreshCw, Trash2, Upload, WalletCards } from "lucide-react";
+import type { Account, Page, ReconcileResult, SyncResult } from "../../types";
 import { Dialog } from "../../components/ui/Dialog";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -11,13 +11,6 @@ import { connectorSummary, connectorTypeMeta, EVM_CHAINS } from "./connectorType
 import { apiFetch, getJson, patchJson, postJson, uploadFile } from "../../lib/api";
 import { relativeTime } from "../../lib/format";
 import { OpeningBalanceDialog } from "./OpeningBalanceDialog";
-
-// The permission labels this app actually relies on — a connection granting
-// exactly these (and nothing more) is the ideal, minimum-permission case.
-const OBSERVER_PERMISSIONS: { method: string; label: string }[] = [
-  { method: "GET_BALANCE", label: "Read balance" },
-  { method: "LIST_TRANSACTIONS", label: "Read transactions" },
-];
 
 // Sync/Backfill responses carry a `reconciliation` field whenever the
 // source's connector can report a live balance (see fetch_balances on the
@@ -39,28 +32,11 @@ export function AccountActions({ account, onClose, onNavigate, onChanged }: Acco
   const [backfilling, setBackfilling] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [reconcileResult, setReconcileResult] = useState<ReconcileResult | null>(null);
-  const [permissions, setPermissions] = useState<NWCPermissionsResult | null>(null);
   const [working, setWorking] = useState(false);
   const [pendingAction, setPendingAction] = useState<"archive" | "unarchive" | "delete" | null>(null);
   const [feedback, setFeedback] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const isArchived = Boolean(account.archived_at);
-
-  useEffect(() => {
-    if (account.connector_type !== "lightning_nwc") return;
-    let cancelled = false;
-    void getJson<NWCPermissionsResult>(`/api/accounts/${account.id}/nwc-permissions`).then(
-      (result) => {
-        if (!cancelled) setPermissions(result);
-      },
-      () => {
-        /* silent — the account detail view just won't show a permissions block */
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [account.connector_type, account.id]);
 
   const describeSync = (result: SyncResult) => {
     // result.message carries a source-imposed limitation note (e.g. Bitget's
@@ -229,34 +205,6 @@ export function AccountActions({ account, onClose, onNavigate, onChanged }: Acco
             <dd className="mt-1 text-soft">{account.note || "No source note recorded."}</dd>
           </div>
         </dl>
-
-        {account.connector_type === "lightning_nwc" && permissions && permissions.status === "ok" && (
-          <div>
-            <p className="font-mono text-[10px] uppercase tracking-widest text-faint">Permissions</p>
-            <ul className="mt-2 space-y-1.5 text-xs">
-              {OBSERVER_PERMISSIONS.map(({ method, label }) => {
-                const granted = permissions.methods.includes(method);
-                return (
-                  <li key={method} className={`flex items-center gap-2 ${granted ? "text-ink" : "text-faint"}`}>
-                    {granted ? <Check size={14} className="text-good" /> : <X size={14} className="text-faint" />}
-                    {label}
-                  </li>
-                );
-              })}
-              <li className="flex items-center gap-2 text-ink">
-                <X size={14} className="text-good" />
-                Send payments — never requested, never used
-              </li>
-            </ul>
-            {permissions.extra_methods.length > 0 && (
-              <p className="mt-2 rounded-lg bg-warn-soft px-3 py-2 text-[11px] text-warn">
-                This connection also grants {permissions.extra_methods.join(", ").toLowerCase()} — more than this app
-                needs. It's never used, but if your wallet supports issuing a read-only connection, reconnecting with
-                one is the safer choice.
-              </p>
-            )}
-          </div>
-        )}
 
         <div>
           <p className="font-mono text-[10px] uppercase tracking-widest text-faint">Source actions</p>
@@ -431,19 +379,17 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
   const [apiSecret, setApiSecret] = useState("");
   const [passphrase, setPassphrase] = useState("");
   const [symbols, setSymbols] = useState("");
-  const [nwcConnectionString, setNwcConnectionString] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   const isLiveExchange = LIVE_EXCHANGE_TYPES.includes(account.connector_type);
-  const isNwc = account.connector_type === "lightning_nwc";
 
   const save = async () => {
     setSaving(true);
     setError("");
     try {
       const body: Record<string, unknown> = { name, wallet_software: walletSoftware || null, note: note || null };
-      if (account.address !== null || ["bitcoin_address", "evm_address", "solana_address"].includes(account.connector_type)) {
+      if (account.address !== null || ["bitcoin_address", "evm_address"].includes(account.connector_type)) {
         body.address = address || null;
       }
       if (account.connector_type === "evm_address") {
@@ -470,9 +416,6 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
           account.connector_type === "bitget_live"
             ? { api_key: apiKey, api_secret: apiSecret, passphrase }
             : { api_key: apiKey, api_secret: apiSecret, symbols };
-      }
-      if (isNwc && nwcConnectionString.trim()) {
-        body.config = { connection_string: nwcConnectionString };
       }
       await patchJson(`/api/accounts/${account.id}`, body);
       onSaved();
@@ -504,7 +447,7 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
         <Field label="Name" htmlFor="edit-name">
           <Input id="edit-name" value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
-        {["bitcoin_address", "evm_address", "solana_address"].includes(account.connector_type) && (
+        {["bitcoin_address", "evm_address"].includes(account.connector_type) && (
           <Field label="Address" htmlFor="edit-address" hint="Public address only.">
             <Input id="edit-address" value={address} onChange={(e) => setAddress(e.target.value)} />
           </Field>
@@ -575,22 +518,6 @@ function EditAccountDialog({ account, onClose, onSaved }: { account: Account; on
                 </Field>
               )}
             </div>
-          </div>
-        )}
-        {isNwc && (
-          <div className="space-y-4 rounded-lg border border-line p-3.5">
-            <p className="text-[11px] text-soft">
-              Rotate the NWC connection — leave blank to keep the current one.
-            </p>
-            <Field label="New NWC connection string" htmlFor="edit-nwc-uri">
-              <Textarea
-                id="edit-nwc-uri"
-                rows={3}
-                value={nwcConnectionString}
-                onChange={(e) => setNwcConnectionString(e.target.value)}
-                placeholder="Unchanged"
-              />
-            </Field>
           </div>
         )}
         <Field label="Wallet software" htmlFor="edit-software">

@@ -5,7 +5,6 @@ import {
   NetworkBitcoin,
   NetworkEthereum,
   NetworkPolygon,
-  NetworkSolana,
   WalletLedger,
   WalletMetamask,
   WalletPhantom,
@@ -51,8 +50,8 @@ function SourceIcon({ account, connector, meta }: { account: Account; connector:
   }
 
   if (account.kind === "wallet") {
-    const networkName = (account.chain_network ?? (account.connector_type === "bitcoin_address" ? "bitcoin" : account.connector_type === "solana_address" ? "solana" : null))?.toLowerCase().replace(/[\s_-]/g, "");
-    const Network = networkName === "ethereum" ? NetworkEthereum : networkName === "polygon" ? NetworkPolygon : networkName === "bsc" || networkName === "bnbsmartchain" ? NetworkBinanceSmartChain : networkName === "bitcoin" ? NetworkBitcoin : networkName === "solana" ? NetworkSolana : null;
+    const networkName = (account.chain_network ?? (account.connector_type === "bitcoin_address" ? "bitcoin" : null))?.toLowerCase().replace(/[\s_-]/g, "");
+    const Network = networkName === "ethereum" ? NetworkEthereum : networkName === "polygon" ? NetworkPolygon : networkName === "bsc" || networkName === "bnbsmartchain" ? NetworkBinanceSmartChain : networkName === "bitcoin" ? NetworkBitcoin : null;
     if (Network) return <Network {...iconProps} />;
   }
 
