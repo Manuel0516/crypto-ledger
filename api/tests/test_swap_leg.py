@@ -73,6 +73,10 @@ class SwapLegTests(unittest.TestCase):
         refreshed = self.session.get(Event, event.id)
         self.assertEqual(refreshed.secondary_asset.symbol, "USDC")
         self.assertEqual(refreshed.secondary_amount, "1800.50")
+        # The base column itself must say SWAP too, not just the override
+        # shadow — a raw `event_type == "SWAP"` filter (Activity list, tax
+        # year grouping) reads the base column directly.
+        self.assertEqual(refreshed.event_type, "SWAP")
 
     def test_primary_leg_and_its_existing_valuation_are_untouched(self) -> None:
         event = self._withdrawal()

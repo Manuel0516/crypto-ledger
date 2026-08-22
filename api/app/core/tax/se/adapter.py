@@ -24,19 +24,14 @@ from ..common import (
 from ..format import format_money, format_quantity
 
 # Acquisitions: establish or add to the running average-cost position.
-_IN_TYPES = {
-    "BUY", "AIRDROP", "INCOME", "INTEREST", "YIELD", "STAKING_REWARD", "MINING_REWARD",
-    "GIFT_RECEIVED", "REFERRAL_REWARD", "CASHBACK", "LENDING_REWARD", "LP_REWARD",
-    "MARGIN_INTEREST", "NFT_MINT", "TOKEN_MINT", "LIGHTNING_RECEIVE",
-}
+_IN_TYPES = {"BUY", "AIRDROP", "INCOME", "INTEREST", "STAKING_REWARD", "MINING_REWARD", "GIFT_RECEIVED"}
 # Which of those are *also* separately-reportable income (not just a cost-basis event).
 _INCOME_CATEGORY = {
     "STAKING_REWARD": "STAKING", "MINING_REWARD": "MINING", "AIRDROP": "AIRDROP",
-    "INTEREST": "INTEREST", "YIELD": "INTEREST", "INCOME": "INCOME", "REFERRAL_REWARD": "INCOME",
-    "CASHBACK": "INCOME", "LENDING_REWARD": "INTEREST", "LP_REWARD": "INCOME", "MARGIN_INTEREST": "INTEREST",
+    "INTEREST": "INTEREST", "INCOME": "INCOME",
 }
 # Disposals: reduce the running position, realize gain/loss against its average cost.
-_OUT_TYPES = {"SELL", "PAYMENT", "DONATION", "GIFT_SENT", "LOST", "STOLEN", "NFT_SELL", "LIGHTNING_SEND", "TOKEN_BURN"}
+_OUT_TYPES = {"SELL", "PAYMENT", "DONATION", "GIFT_SENT", "LOST"}
 
 
 class _Position:
@@ -127,7 +122,7 @@ class SwedenAdapter:
             pos = positions.setdefault(asset, _Position())
             amount = abs(Decimal(event.primary_amount))
             year = event.occurred_at.year
-            tax_event_type = "LP_REWARD" if is_liquidity_reward(event) else event.event_type
+            tax_event_type = "INCOME" if is_liquidity_reward(event) else event.event_type
 
             if event.event_type == "LIQUIDITY" and not is_liquidity_reward(event):
                 continue
@@ -165,7 +160,7 @@ class SwedenAdapter:
                     sec_pos.acquire(Decimal(event.secondary_amount), proceeds)
                     acquired[sec_asset] = acquired.get(sec_asset, Decimal(0)) + Decimal(event.secondary_amount)
             elif tax_event_type in _OUT_TYPES:
-                proceeds = Decimal(0) if tax_event_type in ("LOST", "STOLEN") else _sek_value(event)
+                proceeds = Decimal(0) if tax_event_type == "LOST" else _sek_value(event)
                 if pos.quantity < amount:
                     underflow_assets.add(asset)
                 basis = pos.dispose(amount)

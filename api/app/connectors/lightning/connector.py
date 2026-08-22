@@ -106,7 +106,7 @@ class LightningConnector:
             if fee_msat:
                 fees.append(NormalizedFee(fee_type="LIGHTNING_FEE", asset_symbol="BTC", amount=_msat_to_btc(fee_msat)))
             return NormalizedEvent(
-                event_type="LIGHTNING_SEND",
+                event_type="WITHDRAWAL",
                 event_subtype="lightning",
                 direction="-",
                 status="COMPLETE",
@@ -135,7 +135,7 @@ class LightningConnector:
         if kind == "invoice":
             value_msat = _first_int(payload, "value_msat") or _first_int(payload, "value") * 1000
             return NormalizedEvent(
-                event_type="LIGHTNING_RECEIVE",
+                event_type="DEPOSIT",
                 event_subtype="lightning",
                 direction="+",
                 status="COMPLETE",
@@ -162,7 +162,7 @@ class LightningConnector:
         if kind == "channel_open":
             capacity_sat = _first_int(payload, "capacity")
             return NormalizedEvent(
-                event_type="LIGHTNING_CHANNEL_OPEN",
+                event_type="STAKING_DEPOSIT",
                 event_subtype="channel",
                 direction="-",
                 status="REQUIRES_REVIEW",
@@ -193,7 +193,7 @@ class LightningConnector:
         # channel_close
         settled_sat = _first_int(payload, "settled_balance")
         return NormalizedEvent(
-            event_type="LIGHTNING_CHANNEL_CLOSE",
+            event_type="STAKING_WITHDRAWAL",
             event_subtype="channel",
             direction="+",
             status="REQUIRES_REVIEW",

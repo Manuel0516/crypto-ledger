@@ -60,35 +60,35 @@ _CLASSIC_FUTURES_WINDOW_MS = 30 * 24 * 3600 * 1000
 # *balance-neutral* Activity events: the same asset/amount is used on both
 # legs, so the mirrored IN/OUT records cannot double-count holdings.
 _UTA_FINANCIAL_TYPE_MAP = {
-    "INTEREST_SETTLEMENT_OUT": ("MARGIN_INTEREST", "-"),
-    "CONTRACT_MAIN_SETTLE_FEE_USER_IN": ("FUNDING_PAYMENT", "+"),
-    "CONTRACT_MAIN_SETTLE_FEE_USER_OUT": ("FUNDING_PAYMENT", "-"),
-    "MARGIN_SETTLE_FEE_USER_IN": ("FUNDING_PAYMENT", "+"),
-    "MARGIN_SETTLE_FEE_USER_OUT": ("FUNDING_PAYMENT", "-"),
-    "RWA_FIXED_SETTLE_FEE_USER_IN": ("FUNDING_PAYMENT", "+"),
-    "RWA_FIXED_SETTLE_FEE_USER_OUT": ("FUNDING_PAYMENT", "-"),
-    "RWA_CONTRACT_MAIN_SETTLE_FEE_USER_IN": ("FUNDING_PAYMENT", "+"),
-    "RWA_CONTRACT_MAIN_SETTLE_FEE_USER_OUT": ("FUNDING_PAYMENT", "-"),
-    "BURST_CLOSE_LONG": ("LIQUIDATION", "-"),
-    "BURST_CLOSE_SHORT": ("LIQUIDATION", "-"),
-    "BURST_BUY_SSM": ("LIQUIDATION", "-"),
-    "BURST_SELL_SSM": ("LIQUIDATION", "-"),
-    "RISK_LIQ_USER_IN": ("LIQUIDATION", "+"),
-    "RISK_LIQ_USER_OUT": ("LIQUIDATION", "-"),
-    "FIXED_RISK_LIQ_USER_IN": ("LIQUIDATION", "+"),
-    "FIXED_RISK_LIQ_USER_OUT": ("LIQUIDATION", "-"),
-    "RISK_LIQ_DEFAULT_USER_IN": ("LIQUIDATION", "+"),
-    "FIXED_RISK_LIQ_DEFAULT_USER_IN": ("LIQUIDATION", "+"),
-    "LIQ_FEE": ("LIQUIDATION", "-"),
-    "LIQ_REPAYMENT": ("LIQUIDATION", "-"),
-    "BORROW": ("MARGIN_BORROW", "+"),
-    "REPAYMENT": ("MARGIN_REPAY", "-"),
-    "INTEREST_REPAYMENT": ("MARGIN_INTEREST", "-"),
-    "TRACE_SHARE_BENEFIT_USER_OUT": ("FEE", "-"),
+    "INTEREST_SETTLEMENT_OUT": ("INTEREST", "-"),
+    "CONTRACT_MAIN_SETTLE_FEE_USER_IN": ("INCOME", "+"),
+    "CONTRACT_MAIN_SETTLE_FEE_USER_OUT": ("INCOME", "-"),
+    "MARGIN_SETTLE_FEE_USER_IN": ("INCOME", "+"),
+    "MARGIN_SETTLE_FEE_USER_OUT": ("INCOME", "-"),
+    "RWA_FIXED_SETTLE_FEE_USER_IN": ("INCOME", "+"),
+    "RWA_FIXED_SETTLE_FEE_USER_OUT": ("INCOME", "-"),
+    "RWA_CONTRACT_MAIN_SETTLE_FEE_USER_IN": ("INCOME", "+"),
+    "RWA_CONTRACT_MAIN_SETTLE_FEE_USER_OUT": ("INCOME", "-"),
+    "BURST_CLOSE_LONG": ("WITHDRAWAL", "-"),
+    "BURST_CLOSE_SHORT": ("WITHDRAWAL", "-"),
+    "BURST_BUY_SSM": ("WITHDRAWAL", "-"),
+    "BURST_SELL_SSM": ("WITHDRAWAL", "-"),
+    "RISK_LIQ_USER_IN": ("WITHDRAWAL", "+"),
+    "RISK_LIQ_USER_OUT": ("WITHDRAWAL", "-"),
+    "FIXED_RISK_LIQ_USER_IN": ("WITHDRAWAL", "+"),
+    "FIXED_RISK_LIQ_USER_OUT": ("WITHDRAWAL", "-"),
+    "RISK_LIQ_DEFAULT_USER_IN": ("WITHDRAWAL", "+"),
+    "FIXED_RISK_LIQ_DEFAULT_USER_IN": ("WITHDRAWAL", "+"),
+    "LIQ_FEE": ("WITHDRAWAL", "-"),
+    "LIQ_REPAYMENT": ("WITHDRAWAL", "-"),
+    "BORROW": ("DEPOSIT", "+"),
+    "REPAYMENT": ("WITHDRAWAL", "-"),
+    "INTEREST_REPAYMENT": ("INTEREST", "-"),
+    "TRACE_SHARE_BENEFIT_USER_OUT": ("WITHDRAWAL", "-"),
     "TRACE_SHARE_BENEFIT_USER_IN": ("INCOME", "+"),
-    "BONUS_GRANT_USER_IN": ("CASHBACK", "+"),
-    "BONUS_EXPIRE_USER_OUT": ("FEE", "-"),
-    "BONUS_TRANSFER_USER_OUT": ("FEE", "-"),
+    "BONUS_GRANT_USER_IN": ("INCOME", "+"),
+    "BONUS_EXPIRE_USER_OUT": ("WITHDRAWAL", "-"),
+    "BONUS_TRANSFER_USER_OUT": ("WITHDRAWAL", "-"),
     "DELIST_MARGIN_TOKEN_SOURCE_USER_OUT": ("SELL", "-"),
     "DELIST_MARGIN_TOKEN_TARGET_USER_IN": ("BUY", "+"),
     "DELIST_SMALL_BALANCE_USER_OUT": ("SELL", "-"),
@@ -826,7 +826,7 @@ class BitgetLiveConnector:
 
         if kind == "margin_borrow":
             return NormalizedEvent(
-                event_type="MARGIN_BORROW",
+                event_type="DEPOSIT",
                 event_subtype=f"{payload.get('_margin_mode', 'cross')}_margin",
                 direction="+",
                 status="COMPLETE",
@@ -841,7 +841,7 @@ class BitgetLiveConnector:
 
         if kind == "margin_repay":
             return NormalizedEvent(
-                event_type="MARGIN_REPAY",
+                event_type="WITHDRAWAL",
                 event_subtype=f"{payload.get('_margin_mode', 'cross')}_margin",
                 direction="-",
                 status="COMPLETE",
@@ -861,8 +861,8 @@ class BitgetLiveConnector:
             event_type = {
                 "deal_in": "BUY",
                 "deal_out": "SELL",
-                "liquidation_fee": "LIQUIDATION",
-                "confiscated": "LIQUIDATION",
+                "liquidation_fee": "WITHDRAWAL",
+                "confiscated": "WITHDRAWAL",
                 "compensate": "INCOME",
                 "exchange_in": "BUY",
                 "exchange_out": "SELL",
@@ -972,7 +972,7 @@ class BitgetLiveConnector:
             elif business_type == "TRANSFER_OUT":
                 event_type, direction = "TRANSFER", "-"
             elif business_type == "REBATE_REWARDS":
-                event_type = "CASHBACK"
+                event_type = "INCOME"
             elif business_type in {"AIRDROP_REWARDS", "USDT_CONTRACT_REWARDS", "MIX_CONTRACT_REWARDS"}:
                 event_type = "AIRDROP"
             elif business_type in {"BATCH_INTEREST_USER_IN", "INTEREST", "INTEREST_SETTLEMENT"}:
@@ -1037,7 +1037,7 @@ class BitgetLiveConnector:
                 # already own; it isn't modeled as a holdings change here.
                 pnl_is_loss = str(payload.get("execPnl", "0")).strip().startswith("-")
                 return NormalizedEvent(
-                    event_type="FUTURES_PNL",
+                    event_type="INCOME",
                     event_subtype=f"futures:{category.lower()}",
                     direction="-" if pnl_is_loss else "+",
                     status="COMPLETE",
@@ -1057,7 +1057,7 @@ class BitgetLiveConnector:
             # cost) and the raw evidence are preserved either way rather
             # than silently discarded.
             return NormalizedEvent(
-                event_type="FUTURES_OPEN" if trade_side == "open" else "FUTURES_CLOSE",
+                event_type="WITHDRAWAL",
                 event_subtype=f"futures:{category.lower()}",
                 direction="-",
                 status="REQUIRES_REVIEW",
@@ -1084,7 +1084,7 @@ class BitgetLiveConnector:
 
             if is_close and realized_pnl:
                 return NormalizedEvent(
-                    event_type="LIQUIDATION" if is_liquidation else "FUTURES_PNL",
+                    event_type="WITHDRAWAL" if is_liquidation else "INCOME",
                     event_subtype=f"futures:{product.lower()}",
                     direction="-" if pnl_is_loss else "+",
                     status="COMPLETE",
@@ -1100,7 +1100,7 @@ class BitgetLiveConnector:
                 )
 
             return NormalizedEvent(
-                event_type="FUTURES_CLOSE" if is_close else "FUTURES_OPEN",
+                event_type="WITHDRAWAL",
                 event_subtype=f"futures:{product.lower()}",
                 direction="-",
                 status="REQUIRES_REVIEW",
@@ -1185,7 +1185,7 @@ class BitgetLiveConnector:
             from_lead = "lead" in {part.strip().lower() for part in str(payload.get("fromType", "")).split(",")}
             is_allocation = to_lead and not from_lead
             return NormalizedEvent(
-                event_type="LENDING_DEPOSIT" if is_allocation else "LENDING_WITHDRAWAL",
+                event_type="STAKING_DEPOSIT" if is_allocation else "STAKING_WITHDRAWAL",
                 event_subtype="bitget_copy_trading_allocation",
                 direction="-" if is_allocation else "+",
                 status="COMPLETE" if str(payload.get("status", "")).lower() == "successful" and (to_lead or from_lead) else "REQUIRES_REVIEW",
@@ -1201,7 +1201,7 @@ class BitgetLiveConnector:
         if kind == "uta_loan_borrow":
             status = str(payload.get("status", "")).lower()
             return NormalizedEvent(
-                event_type="MARGIN_BORROW",
+                event_type="DEPOSIT",
                 event_subtype=f"crypto_loan:{str(payload.get('daily', 'flexible')).lower()}",
                 direction="+",
                 status="COMPLETE" if status not in {"rollback", "failed"} else "REQUIRES_REVIEW",
@@ -1218,7 +1218,7 @@ class BitgetLiveConnector:
 
         if kind == "uta_loan_repay_principal":
             return NormalizedEvent(
-                event_type="MARGIN_REPAY",
+                event_type="WITHDRAWAL",
                 event_subtype="crypto_loan",
                 direction="-",
                 status="COMPLETE",
@@ -1235,7 +1235,7 @@ class BitgetLiveConnector:
 
         if kind == "uta_loan_repay_interest":
             return NormalizedEvent(
-                event_type="MARGIN_INTEREST",
+                event_type="INTEREST",
                 event_subtype="crypto_loan",
                 direction="-",
                 status="COMPLETE",
@@ -1250,7 +1250,7 @@ class BitgetLiveConnector:
 
         if kind == "uta_loan_repay_collateral":
             return NormalizedEvent(
-                event_type="LENDING_WITHDRAWAL",
+                event_type="STAKING_WITHDRAWAL",
                 event_subtype="crypto_loan_collateral_release",
                 direction="+",
                 status="COMPLETE",
@@ -1269,7 +1269,7 @@ class BitgetLiveConnector:
                 NormalizedFee("EXCHANGE_FEE", str(payload.get("pledgeCoin", "")).upper(), fee)
             ] if fee else []
             return NormalizedEvent(
-                event_type="LIQUIDATION",
+                event_type="WITHDRAWAL",
                 event_subtype="crypto_loan",
                 direction="-",
                 status="COMPLETE" if str(payload.get("status", "")).lower() == "complete" else "REQUIRES_REVIEW",
@@ -1287,7 +1287,7 @@ class BitgetLiveConnector:
             side = str(payload.get("reviseSide", "")).lower()
             is_lock = side == "down"
             return NormalizedEvent(
-                event_type="LENDING_DEPOSIT" if is_lock else "LENDING_WITHDRAWAL",
+                event_type="STAKING_DEPOSIT" if is_lock else "STAKING_WITHDRAWAL",
                 event_subtype="crypto_loan_collateral_adjustment",
                 direction="-" if is_lock else "+",
                 status="COMPLETE" if side in {"down", "up"} else "REQUIRES_REVIEW",
@@ -1306,15 +1306,15 @@ class BitgetLiveConnector:
         # rather than guess (plan §38).
         biz = str(payload.get("businessType") or payload.get("bizType") or "").lower()
         biz_map = {
-            "funding_fee": ("FUNDING_PAYMENT", "fee"),
-            "contract_settle_fee": ("FUNDING_PAYMENT", "fee"),
-            "close_position": ("FUTURES_PNL", "pnl"),
-            "open_position": ("FUTURES_OPEN", "open"),
-            "trans_from_exchange": ("TRANSFER", "transfer"),
-            "trans_to_exchange": ("TRANSFER", "transfer"),
-            "liquidation": ("LIQUIDATION", "liquidation"),
+            "funding_fee": "INCOME",
+            "contract_settle_fee": "INCOME",
+            "close_position": "INCOME",
+            "open_position": "WITHDRAWAL",
+            "trans_from_exchange": "TRANSFER",
+            "trans_to_exchange": "TRANSFER",
+            "liquidation": "WITHDRAWAL",
         }
-        event_type, _ = biz_map.get(biz, ("UNKNOWN", "unrecognized"))
+        event_type = biz_map.get(biz, "UNKNOWN")
         amount_raw = payload.get("amount", "0")
         asset = str(payload.get("coin", payload.get("marginCoin", ""))).upper()
         amount = str(amount_raw).lstrip("-") or "0"

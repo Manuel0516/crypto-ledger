@@ -173,7 +173,7 @@ class NWCConnectorTests(unittest.TestCase):
         raw = list(connector.fetch())
         self.assertEqual(len(raw), 1)
         event = connector.normalize(raw[0])
-        self.assertEqual(event.event_type, "LIGHTNING_RECEIVE")
+        self.assertEqual(event.event_type, "DEPOSIT")
         self.assertEqual(event.direction, "+")
         self.assertEqual(event.status, "COMPLETE")
         self.assertEqual(Decimal(event.amount), Decimal("125420000") / Decimal(10**11))
@@ -186,7 +186,7 @@ class NWCConnectorTests(unittest.TestCase):
             payment_hash="hash-out-1", amount_msat=12_000_000, settled_at=1_700_000_200,
         )])
         event = connector.normalize(list(connector.fetch())[0])
-        self.assertEqual(event.event_type, "LIGHTNING_SEND")
+        self.assertEqual(event.event_type, "WITHDRAWAL")
         self.assertEqual(event.direction, "-")
         self.assertEqual(Decimal(event.amount), Decimal("12000000") / Decimal(10**11))
 
@@ -241,7 +241,7 @@ class NWCConnectorTests(unittest.TestCase):
             description=None, invoice=None, preimage=None,
         )])
         event = connector.normalize(list(connector.fetch())[0])
-        self.assertEqual(event.event_type, "LIGHTNING_RECEIVE")
+        self.assertEqual(event.event_type, "DEPOSIT")
         self.assertIsNone(event.description)
 
     def test_malformed_response_missing_state_does_not_crash(self) -> None:

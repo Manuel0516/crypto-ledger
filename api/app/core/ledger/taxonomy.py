@@ -7,38 +7,27 @@ source labels are preserved in ``event_subtype`` while the canonical type is
 
 from __future__ import annotations
 
+# Deliberately small: every type here is either in real use today or is a
+# distinct category the tax adapters (and RP2 itself) already treat
+# differently from everything else. A type that isn't — margin, futures,
+# options, NFT sub-types, bridges, Lightning specifics — folds into the
+# closest of these instead of getting its own label; none of those had
+# automatic tax treatment before this either (see uncovered_type_warning),
+# so folding them changes no report total, only how many labels exist.
 CANONICAL_EVENT_TYPES = frozenset(
     {
-        "BUY", "SELL", "SWAP", "DEPOSIT", "WITHDRAWAL", "TRANSFER", "SEND", "RECEIVE", "PAYMENT",
-        "STAKING_DEPOSIT", "STAKING_WITHDRAWAL", "STAKING_REWARD", "INTEREST", "YIELD",
-        "LENDING_DEPOSIT", "LENDING_WITHDRAWAL", "LENDING_REWARD", "MINING_REWARD", "AIRDROP",
-        "CASHBACK", "REFERRAL_REWARD", "INCOME", "FEE", "NETWORK_FEE", "GAS_FEE", "EXCHANGE_FEE",
-        "TRADING_FEE", "FUNDING_FEE", "MARGIN_BORROW", "MARGIN_REPAY", "MARGIN_INTEREST",
-        "FUTURES_OPEN", "FUTURES_CLOSE", "FUTURES_PNL", "OPTION_TRADE", "OPTION_EXERCISE", "FUNDING_PAYMENT", "LIQUIDATION",
-        "NFT_MINT", "NFT_BUY", "NFT_SELL", "NFT_TRANSFER",
-        "BRIDGE_OUT", "BRIDGE_IN", "LIGHTNING_SEND", "LIGHTNING_RECEIVE", "LIGHTNING_CHANNEL_OPEN",
-        "LIGHTNING_CHANNEL_CLOSE", "LIGHTNING_FEE", "TOKEN_MINT", "TOKEN_BURN", "GIFT_SENT",
-        "GIFT_RECEIVED", "DONATION", "LIQUIDITY", "LOST", "STOLEN", "MANUAL_ADJUSTMENT", "UNKNOWN",
+        "BUY", "SELL", "SWAP", "DEPOSIT", "WITHDRAWAL", "TRANSFER", "PAYMENT",
+        "STAKING_DEPOSIT", "STAKING_WITHDRAWAL", "STAKING_REWARD", "INTEREST",
+        "MINING_REWARD", "AIRDROP", "INCOME",
+        "GIFT_SENT", "GIFT_RECEIVED", "DONATION", "LOST",
+        "LIQUIDITY", "MANUAL_ADJUSTMENT", "UNKNOWN",
     }
 )
 
-# Manual entry is intentionally narrower than the canonical import taxonomy.
-# Automatic connectors may still emit the full set above; the Activity form
-# only offers these user-facing choices.
-MANUAL_EVENT_TYPES = frozenset(
-    {
-        "DEPOSIT",
-        "WITHDRAWAL",
-        "TRANSFER",
-        "PAYMENT",
-        "DONATION",
-        "SWAP",
-        "MINING_REWARD",
-        "STAKING_REWARD",
-        "LIQUIDITY",
-        "MANUAL_ADJUSTMENT",  # opening balances
-    }
-)
+# The Activity form offers every canonical type except UNKNOWN, which only
+# ever comes from automatic classification failing to recognize a source
+# type — never something a person would deliberately choose.
+MANUAL_EVENT_TYPES = CANONICAL_EVENT_TYPES - {"UNKNOWN"}
 
 
 def canonicalize_event_type(event_type: str | None, event_subtype: str | None = None) -> tuple[str, str | None]:

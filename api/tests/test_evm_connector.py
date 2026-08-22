@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.api.accounts import _validate_chain_network
 from app.connectors.base import ConnectorUnavailable, RawRecord
-from app.connectors.evm.connector import CHAINS, EVMAddressConnector, _DEFAULT_BSC_TOKEN_CONTRACTS, _merge_lp_deposits, _merge_swap_legs
+from app.connectors.evm.connector import CHAINS, EVMAddressConnector, _DEFAULT_BSC_TOKEN_CONTRACTS, _merge_lp_deposits, _merge_swap_legs, _relabel_lp_collects, _synthesize_wrap_legs
 from app.core.assets.registry import KNOWN_ASSETS
 
 
@@ -438,7 +438,7 @@ class EVMConnectorTests(unittest.TestCase):
         self.assertEqual(nft.asset_network, "BNB Smart Chain")
         self.assertEqual(nft.asset_type, "NFT")
         self.assertEqual(nft.amount, "3")
-        self.assertEqual(nft.event_type, "NFT_TRANSFER")
+        self.assertEqual(nft.event_type, "DEPOSIT")
 
     def test_two_leg_different_asset_transaction_merges_into_one_swap(self) -> None:
         out_leg = {
@@ -618,6 +618,101 @@ class EVMConnectorTests(unittest.TestCase):
 
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0][0]["_kind"], "nft721")
+
+    def test_wbnb_unwrap_merges_the_zero_value_call_and_internal_transfer_into_one_swap(self) -> None:
+        # Real shape from a WBNB.withdraw() call: bsctrace never indexes a
+        # token leg for it, only a zero-value call to the WBNB contract plus
+        # an "internal" native transfer back — nothing pairs them without
+        # recognizing the known contract address.
+        wbnb = "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
+        call_leg = {
+            "_kind": "contract_call",
+            "hash": "0xunwrap",
+            "from": ADDRESS,
+            "to": wbnb,
+            "gasUsed": "27650",
+            "gasPrice": "55000",
+        }
+        native_leg = {
+            "_kind": "native",
+            "_native_symbol": "BNB",
+            "_internal": True,
+            "hash": "0xunwrap",
+            "from": wbnb,
+            "to": ADDRESS,
+            "value": "14761196434584237",
+            "timeStamp": "1787333000",
+        }
+
+        pipeline = _merge_swap_legs(
+            _merge_lp_deposits(_synthesize_wrap_legs([(call_leg, "0xunwrap-call"), (native_leg, "0xunwrap-native")], ADDRESS), ADDRESS),
+            ADDRESS,
+        )
+        merged = list(pipeline)
+
+        self.assertEqual(len(merged), 1)
+        payload, external_id = merged[0]
+        self.assertEqual(payload["_kind"], "swap")
+        self.assertEqual(external_id, "0xunwrap-swap")
+        self.assertEqual(payload["_out_symbol"], "WBNB")
+        self.assertEqual(payload["_in_symbol"], "BNB")
+        self.assertAlmostEqual(float(payload["_out_amount"]), float(payload["_in_amount"]), places=15)
+        self.assertIsNotNone(payload["_gas_eth"])
+
+    def test_wrap_does_not_synthesize_a_leg_when_a_real_token_leg_already_exists(self) -> None:
+        wbnb = "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
+        call_leg = {"_kind": "contract_call", "hash": "0xhastoken", "from": ADDRESS, "to": wbnb, "gasUsed": "1", "gasPrice": "1"}
+        token_leg = {
+            "_kind": "token", "hash": "0xhastoken", "from": wbnb, "to": ADDRESS, "value": "1",
+            "tokenDecimal": "18", "tokenSymbol": "WBNB", "contractAddress": wbnb,
+        }
+
+        result = list(_synthesize_wrap_legs([(call_leg, "0xhastoken-call"), (token_leg, "0xhastoken-token")], ADDRESS))
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual({p["_kind"] for p, _ in result}, {"contract_call", "token"})
+
+    def test_lp_collect_is_flagged_for_review_instead_of_a_plain_deposit(self) -> None:
+        position_manager = "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364"
+        call_leg = {"_kind": "contract_call", "hash": "0xcollect", "from": ADDRESS, "to": position_manager, "gasUsed": "1", "gasPrice": "1"}
+        collected_leg = {
+            "_kind": "token", "hash": "0xcollect", "from": position_manager, "to": ADDRESS, "value": "500000",
+            "tokenDecimal": "6", "tokenSymbol": "USDC", "contractAddress": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+            "timeStamp": "1787333000",
+        }
+
+        relabeled = list(_relabel_lp_collects([(call_leg, "0xcollect-call"), (collected_leg, "0xcollect-token")], ADDRESS))
+        payload = next(p for p, _ in relabeled if p["_kind"] == "token")
+        self.assertEqual(payload["_lp_collect_protocol"], "PancakeSwap V3")
+
+        raw = RawRecord(source_id="evm:bsc:test", external_id="0xcollect-token", source_timestamp=OCCURRED_AT, payload={**payload, "_network": "BNB Smart Chain"})
+        event = self.connector.normalize(raw)
+        self.assertEqual(event.event_type, "LIQUIDITY")
+        self.assertEqual(event.status, "REQUIRES_REVIEW")
+        self.assertIn("PancakeSwap V3", event.notes)
+        self.assertIn("fee income or a withdrawal", event.notes)
+
+    def test_lp_deposit_mint_is_not_relabeled_as_a_collect(self) -> None:
+        position_manager = "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364"
+        call_leg = {"_kind": "contract_call", "hash": "0xmint", "from": ADDRESS, "to": position_manager, "gasUsed": "1", "gasPrice": "1"}
+        mint_leg = {"_kind": "nft721", "hash": "0xmint", "from": ZERO_ADDRESS, "to": ADDRESS, "tokenID": "1", "tokenSymbol": "PCS-V3-POS", "contractAddress": position_manager}
+        funding_leg = {
+            "_kind": "token", "hash": "0xmint", "from": ADDRESS, "to": "0xf2688fb5b81049dfb7703ada5e770543770612c4", "value": "1",
+            "tokenDecimal": "0", "tokenSymbol": "USDC", "contractAddress": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+        }
+
+        relabeled = list(_relabel_lp_collects([(call_leg, "c"), (mint_leg, "m"), (funding_leg, "f")], ADDRESS))
+
+        self.assertTrue(all("_lp_collect_protocol" not in p for p, _ in relabeled))
+
+    def test_unrecognized_contract_call_is_not_treated_as_a_wrap(self) -> None:
+        call_leg = {"_kind": "contract_call", "hash": "0xother", "from": ADDRESS, "to": "0x9999999999999999999999999999999999999999", "gasUsed": "1", "gasPrice": "1"}
+        native_leg = {"_kind": "native", "_native_symbol": "BNB", "_internal": True, "hash": "0xother", "from": "0x9999999999999999999999999999999999999999", "to": ADDRESS, "value": "1"}
+
+        result = list(_synthesize_wrap_legs([(call_leg, "0xother-call"), (native_leg, "0xother-native")], ADDRESS))
+
+        self.assertEqual(len(result), 2)
+        self.assertTrue(all(p["_kind"] != "token" for p, _ in result))
 
     def test_same_asset_both_directions_is_not_treated_as_a_swap(self) -> None:
         legs = [

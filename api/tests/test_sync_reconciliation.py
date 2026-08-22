@@ -163,6 +163,41 @@ class SyncReconciliationTests(unittest.TestCase):
         issue = self.session.query(Issue).filter(Issue.title.contains("sync failed unexpectedly")).one()
         self.assertIn("malformed Binance response", issue.detail)
 
+    def test_repeated_unexpected_failures_refresh_one_issue_instead_of_piling_up(self) -> None:
+        # A source with a permanent problem (bad credentials, an invalid
+        # address) that a scheduler keeps retrying every few minutes must
+        # not leave one issue per attempt — only the latest detail matters.
+        account = self._account()
+        self.session.commit()
+        with patch("app.core.ledger.sync.build_connector", side_effect=RuntimeError("bad request")):
+            sync_account(self.session, account, backfill=True)
+            sync_account(self.session, account)
+            sync_account(self.session, account)
+        issues = self.session.query(Issue).filter(Issue.title.contains("sync failed unexpectedly")).all()
+        self.assertEqual(len(issues), 1)
+
+    def test_repeated_connector_unavailable_refreshes_one_issue(self) -> None:
+        account = self._account()
+        self.session.commit()
+        with patch("app.core.ledger.sync.build_connector", side_effect=ConnectorUnavailable("host down")):
+            sync_account(self.session, account, backfill=True)
+            sync_account(self.session, account)
+        issues = self.session.query(Issue).filter(Issue.title.contains("is not reachable")).all()
+        self.assertEqual(len(issues), 1)
+
+    def test_repeated_stopped_early_failures_refresh_one_issue(self) -> None:
+        class _FlakyConnector(_StubConnector):
+            def fetch(self, since=None):
+                yield RawRecord(self.source_id, "dep-1", OCCURRED_AT, {})
+                raise ConnectorUnavailable("rate limited")
+
+        account = self._account()
+        with patch("app.core.ledger.sync.build_connector", return_value=_FlakyConnector("1.0")):
+            sync_account(self.session, account, backfill=True)
+            sync_account(self.session, account)
+        issues = self.session.query(Issue).filter(Issue.title.contains("sync stopped early")).all()
+        self.assertEqual(len(issues), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

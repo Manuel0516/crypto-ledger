@@ -63,8 +63,8 @@ class TaxWarningGenerationTests(unittest.TestCase):
         # This must remain schedule-only and must never be handed to RP2 as a
         # one-sided disposal.
         self.incomplete_swap = self._event("SWAP", "2", "-", self.usdc, external_id="incomplete-swap")
-        self._event("LIQUIDITY", "1", "-", self.btc, subtype="LP_ADD", external_id="liquidity-add")
-        self._event("LIQUIDITY", "1", "+", self.btc, subtype="LP_REMOVE", external_id="liquidity-remove")
+        self._event("LIQUIDITY", "1", "-", self.btc, subtype="LP_ADD", external_id="liquidity-add", status="REQUIRES_REVIEW")
+        self._event("LIQUIDITY", "1", "+", self.btc, subtype="LP_REMOVE", external_id="liquidity-remove", status="REQUIRES_REVIEW")
         self.session.commit()
 
     def tearDown(self) -> None:
@@ -72,14 +72,14 @@ class TaxWarningGenerationTests(unittest.TestCase):
         self.engine.dispose()
         shutil.rmtree(self.report_dir, ignore_errors=True)
 
-    def _event(self, event_type: str, amount: str, direction: str, asset: Asset, *, external_id: str, subtype: str | None = None) -> Event:
+    def _event(self, event_type: str, amount: str, direction: str, asset: Asset, *, external_id: str, subtype: str | None = None, status: str = "COMPLETE") -> Event:
         event = Event(
             external_id=external_id,
             account_id=self.account.id,
             event_type=event_type,
             event_subtype=subtype,
             direction=direction,
-            status="COMPLETE",
+            status=status,
             occurred_at=OCCURRED_AT,
             primary_asset_id=asset.id,
             primary_amount=amount,
@@ -100,6 +100,19 @@ class TaxWarningGenerationTests(unittest.TestCase):
         self.assertIn("Sources not fully synchronized", titles)
         self.assertIn("Incomplete swap", titles)
         self.assertEqual(titles.count("Liquidity activity needs review"), 2)
+
+    def test_liquidity_warning_disappears_once_marked_reviewed(self) -> None:
+        # A person confirming they've looked at it (the same "Mark reviewed"
+        # action any REQUIRES_REVIEW event gets) is what should make this
+        # specific warning go away — not something that recurs forever.
+        liquidity_add = self.session.query(Event).filter_by(external_id="liquidity-add").one()
+        liquidity_add.status = "COMPLETE"
+        self.session.commit()
+
+        readiness = SpainAdapter().check_readiness(self.session, 2026)
+
+        titles = [issue.title for issue in readiness.issues]
+        self.assertEqual(titles.count("Liquidity activity needs review"), 1)
 
     def test_spain_report_generates_with_all_warning_types(self) -> None:
         def fake_runner(_executable: str, _config: Path, _input: Path, output_dir: Path, _method: str) -> Path:

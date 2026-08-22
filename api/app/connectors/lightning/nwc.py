@@ -242,7 +242,7 @@ class NWCConnector:
             # discarded — see docs/lightning-nwc.md), but no funds actually
             # moved, so the canonical event must not claim otherwise.
             return NormalizedEvent(
-                event_type="LIGHTNING_RECEIVE" if is_incoming else "LIGHTNING_SEND",
+                event_type="DEPOSIT" if is_incoming else "WITHDRAWAL",
                 event_subtype="lightning_nwc",
                 direction="+" if is_incoming else "-",
                 status="REQUIRES_REVIEW",
@@ -263,7 +263,7 @@ class NWCConnector:
             fees.append(NormalizedFee(fee_type="LIGHTNING_FEE", asset_symbol="BTC", amount=_msat_to_btc(fee_msat)))
 
         return NormalizedEvent(
-            event_type="LIGHTNING_RECEIVE" if is_incoming else "LIGHTNING_SEND",
+            event_type="DEPOSIT" if is_incoming else "WITHDRAWAL",
             event_subtype="lightning_nwc",
             direction="+" if is_incoming else "-",
             status="COMPLETE",

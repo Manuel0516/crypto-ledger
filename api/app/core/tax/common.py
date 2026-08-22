@@ -13,7 +13,7 @@ from app.db.models import Account, Event, Issue, Override, PriceObservation
 
 from .adapter import CorrectionRow, EventScheduleRow, ReadinessIssue, ReconciliationSummary, TaxReadinessResult, TransferRow
 INTERNAL_TRANSFER = "INTERNAL_TRANSFER"
-_MOVE_TYPES = ("WITHDRAWAL", "DEPOSIT", "TRANSFER", "SEND", "RECEIVE", "BRIDGE_OUT", "BRIDGE_IN")
+_MOVE_TYPES = ("WITHDRAWAL", "DEPOSIT", "TRANSFER")
 SCHEDULE_ONLY_TYPES = {"DEPOSIT", "WITHDRAWAL", "TRANSFER"}
 
 
@@ -373,7 +373,11 @@ def build_readiness(
                 detail="This swap is missing its incoming asset or amount. It remains in the schedule and is omitted from affected tax totals.",
             )
         )
-    for event in [e for e in year_events if e.event_type == "LIQUIDITY" and not is_liquidity_reward(e)]:
+    # Once a person has actually looked at one of these (status flips to
+    # COMPLETE via "Mark reviewed"), it stops resurfacing here — the facts
+    # were never in question, only whether a person has weighed in on the
+    # tax treatment, and that's a one-time decision, not a standing warning.
+    for event in [e for e in year_events if e.event_type == "LIQUIDITY" and e.status == "REQUIRES_REVIEW" and not is_liquidity_reward(e)]:
         issues.append(
             ReadinessIssue(
                 severity="warning",

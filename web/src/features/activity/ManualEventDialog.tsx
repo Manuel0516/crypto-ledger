@@ -9,15 +9,26 @@ import { Field, Input, Select } from "../../components/ui/Field";
 import { MarketPriceButton } from "../../components/domain/MarketPriceButton";
 
 const ACTIVITY_CHOICES = [
+  { value: "BUY", label: "Buy" },
+  { value: "SELL", label: "Sell" },
+  { value: "SWAP", label: "Swap" },
   { value: "DEPOSIT", label: "Deposit" },
   { value: "WITHDRAWAL", label: "Withdraw" },
   { value: "TRANSFER", label: "Transfer" },
   { value: "PAYMENT", label: "Payment" },
-  { value: "DONATION", label: "Donation" },
-  { value: "SWAP", label: "Swap" },
-  { value: "MINING_REWARD", label: "Mining reward" },
+  { value: "STAKING_DEPOSIT", label: "Stake (lock up)" },
+  { value: "STAKING_WITHDRAWAL", label: "Unstake (withdraw)" },
   { value: "STAKING_REWARD", label: "Staking reward" },
+  { value: "INTEREST", label: "Interest" },
+  { value: "MINING_REWARD", label: "Mining reward" },
+  { value: "AIRDROP", label: "Airdrop" },
+  { value: "INCOME", label: "Income" },
   { value: "LIQUIDITY", label: "Liquidity" },
+  { value: "GIFT_SENT", label: "Gift given" },
+  { value: "GIFT_RECEIVED", label: "Gift received" },
+  { value: "DONATION", label: "Donation" },
+  { value: "LOST", label: "Lost" },
+  { value: "MANUAL_ADJUSTMENT", label: "Manual adjustment" },
 ] as const;
 
 type ActivityType = (typeof ACTIVITY_CHOICES)[number]["value"];
@@ -40,13 +51,13 @@ interface SimpleForm {
   tx_hash: string;
 }
 
-const OUTGOING_TYPES = new Set<ActivityType>(["WITHDRAWAL", "PAYMENT", "DONATION", "SWAP", "LIQUIDITY"]);
-const INCOMING_TYPES = new Set<ActivityType>(["DEPOSIT", "MINING_REWARD", "STAKING_REWARD"]);
+const OUTGOING_TYPES = new Set<ActivityType>(["WITHDRAWAL", "PAYMENT", "DONATION", "SWAP", "LIQUIDITY", "SELL", "STAKING_DEPOSIT", "GIFT_SENT", "LOST"]);
+const INCOMING_TYPES = new Set<ActivityType>(["DEPOSIT", "MINING_REWARD", "STAKING_REWARD", "BUY", "STAKING_WITHDRAWAL", "INTEREST", "AIRDROP", "INCOME", "GIFT_RECEIVED"]);
 
 function normalizeType(type: string): ActivityType {
-  if (type === "BUY" || type === "SELL" || type === "CONVERT") return "SWAP";
+  if (type === "CONVERT") return "SWAP";
   if (type === "SEND" || type === "BRIDGE_OUT") return "WITHDRAWAL";
-  if (type === "RECEIVE" || type === "BRIDGE_IN" || type === "AIRDROP" || type === "INCOME") return "DEPOSIT";
+  if (type === "RECEIVE" || type === "BRIDGE_IN") return "DEPOSIT";
   if (type === "LP_DEPOSIT" || type === "LP_WITHDRAWAL" || type === "LP_REWARD") return "LIQUIDITY";
   return ACTIVITY_CHOICES.some((choice) => choice.value === type) ? (type as ActivityType) : "DEPOSIT";
 }
@@ -130,7 +141,7 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
   const isSwap = form.event_type === "SWAP";
   const isDeposit = form.event_type === "DEPOSIT";
   const isTransfer = form.event_type === "TRANSFER";
-  const needsExternalDestination = form.event_type === "WITHDRAWAL" || form.event_type === "PAYMENT" || form.event_type === "DONATION";
+  const needsExternalDestination = form.event_type === "WITHDRAWAL" || form.event_type === "PAYMENT" || form.event_type === "DONATION" || form.event_type === "GIFT_SENT";
   const needsWalletName = form.account_id == null;
 
   const change = <K extends keyof SimpleForm>(field: K, value: SimpleForm[K]) => setForm((current) => ({ ...current, [field]: value }));
@@ -141,7 +152,7 @@ export function ManualEventDialog({ onClose, onSaved, editEvent }: ManualEventDi
       event_type: value,
       secondary_symbol: value === "SWAP" ? current.secondary_symbol : "",
       secondary_amount: value === "SWAP" ? current.secondary_amount : "",
-      address_to: value === "TRANSFER" || value === "WITHDRAWAL" || value === "PAYMENT" || value === "DONATION" ? current.address_to : "",
+      address_to: value === "TRANSFER" || value === "WITHDRAWAL" || value === "PAYMENT" || value === "DONATION" || value === "GIFT_SENT" ? current.address_to : "",
       from_wallet: value === "DEPOSIT" ? current.from_wallet : "",
     }));
     if (value !== "TRANSFER") setDestinationAccountId(null);

@@ -35,12 +35,12 @@ OPTIONS_BASE_URL = "https://eapi.binance.com"
 # relevant to a personal ledger are mapped, everything else stays UNKNOWN
 # with full raw evidence retained (plan §38).
 _INCOME_TYPE_MAP = {
-    "REALIZED_PNL": "FUTURES_PNL",
-    "FUNDING_FEE": "FUNDING_PAYMENT",
-    "COMMISSION": "TRADING_FEE",
-    "INSURANCE_CLEAR": "LIQUIDATION",
-    "REFERRAL_KICKBACK": "REFERRAL_REWARD",
-    "COMMISSION_REBATE": "CASHBACK",
+    "REALIZED_PNL": "INCOME",
+    "FUNDING_FEE": "INCOME",
+    "COMMISSION": "INCOME",
+    "INSURANCE_CLEAR": "WITHDRAWAL",
+    "REFERRAL_KICKBACK": "INCOME",
+    "COMMISSION_REBATE": "INCOME",
 }
 
 # Binance has no "all trades" endpoint, so myTrades still needs a symbol list —
@@ -1406,7 +1406,7 @@ class BinanceLiveConnector:
 
         if kind == "margin_borrow":
             return NormalizedEvent(
-                event_type="MARGIN_BORROW",
+                event_type="DEPOSIT",
                 event_subtype="margin",
                 direction="+",
                 status="COMPLETE",
@@ -1421,7 +1421,7 @@ class BinanceLiveConnector:
 
         if kind == "margin_repay":
             return NormalizedEvent(
-                event_type="MARGIN_REPAY",
+                event_type="WITHDRAWAL",
                 event_subtype="margin",
                 direction="-",
                 status="COMPLETE",
@@ -1436,7 +1436,7 @@ class BinanceLiveConnector:
 
         if kind == "margin_interest":
             return NormalizedEvent(
-                event_type="MARGIN_INTEREST",
+                event_type="INTEREST",
                 event_subtype=f"margin:{payload.get('type', 'interest')}",
                 direction="-",
                 status="COMPLETE",
@@ -1456,7 +1456,7 @@ class BinanceLiveConnector:
         if kind == "crypto_loan_borrow":
             status = str(payload.get("status", "")).lower()
             return NormalizedEvent(
-                event_type="MARGIN_BORROW",
+                event_type="DEPOSIT",
                 event_subtype=f"binance_crypto_loan:{payload.get('loanTerm', 'stable')}",
                 direction="+",
                 status="COMPLETE" if status not in {"failed", "pending"} else "REQUIRES_REVIEW",
@@ -1476,7 +1476,7 @@ class BinanceLiveConnector:
             uses_collateral = repay_type == "2"
             collateral_used = _positive_amount(payload.get("collateralUsed"))
             return NormalizedEvent(
-                event_type="LIQUIDATION" if uses_collateral else "MARGIN_REPAY",
+                event_type="WITHDRAWAL",
                 event_subtype="binance_crypto_loan:collateral_repay" if uses_collateral else "binance_crypto_loan",
                 direction="-",
                 status="COMPLETE" if str(payload.get("repayStatus", "")).lower() == "repaid" else "REQUIRES_REVIEW",
@@ -1495,7 +1495,7 @@ class BinanceLiveConnector:
             direction = str(payload.get("direction", "")).upper()
             is_additional = direction == "ADDITIONAL"
             return NormalizedEvent(
-                event_type="LENDING_DEPOSIT" if is_additional else "LENDING_WITHDRAWAL",
+                event_type="STAKING_DEPOSIT" if is_additional else "STAKING_WITHDRAWAL",
                 event_subtype="binance_crypto_loan_collateral_adjustment",
                 direction="-" if is_additional else "+",
                 status="COMPLETE" if direction in {"ADDITIONAL", "REDUCED"} else "REQUIRES_REVIEW",
@@ -1514,7 +1514,7 @@ class BinanceLiveConnector:
                 NormalizedFee("EXCHANGE_FEE", str(payload.get("collateralCoin", "")).upper(), fee)
             ] if fee else []
             return NormalizedEvent(
-                event_type="LIQUIDATION",
+                event_type="WITHDRAWAL",
                 event_subtype="binance_flexible_crypto_loan",
                 direction="-",
                 status="COMPLETE" if str(payload.get("status", "")).lower() == "liquidated" else "REQUIRES_REVIEW",
@@ -1549,7 +1549,7 @@ class BinanceLiveConnector:
             if kind == "yield_reward":
                 reward_asset = str(payload.get("rewardAsset") or product).upper()
                 return NormalizedEvent(
-                    event_type="YIELD",
+                    event_type="STAKING_REWARD",
                     event_subtype=f"binance_{product.lower()}_reward",
                     direction="+",
                     status="COMPLETE",
@@ -1751,7 +1751,7 @@ class BinanceLiveConnector:
             if isinstance(wallet_identity, dict):
                 wallet_identity = wallet_identity.get("name") or wallet_identity.get("email") or wallet_identity.get("userId")
             return NormalizedEvent(
-                event_type="PAYMENT" if is_payment else "RECEIVE" if is_refund else "UNKNOWN",
+                event_type="PAYMENT" if is_payment else "DEPOSIT" if is_refund else "UNKNOWN",
                 event_subtype=f"binance_pay:{order_type or 'unspecified'}",
                 direction="-" if is_payment else "+",
                 status="COMPLETE" if (is_payment or is_refund) else "REQUIRES_REVIEW",
@@ -1771,7 +1771,7 @@ class BinanceLiveConnector:
 
         if kind == "spot_rebate":
             rebate_type = str(payload.get("type", ""))
-            event_type = {"1": "CASHBACK", "2": "REFERRAL_REWARD"}.get(rebate_type, "UNKNOWN")
+            event_type = "INCOME" if rebate_type in {"1", "2"} else "UNKNOWN"
             label = {"1": "commission rebate", "2": "referral kickback"}.get(rebate_type, "unrecognized rebate")
             return NormalizedEvent(
                 event_type=event_type,
@@ -1791,7 +1791,7 @@ class BinanceLiveConnector:
             is_payment = record_type == "248"
             is_refund = record_type == "249"
             return NormalizedEvent(
-                event_type="PAYMENT" if is_payment else "RECEIVE" if is_refund else "UNKNOWN",
+                event_type="PAYMENT" if is_payment else "DEPOSIT" if is_refund else "UNKNOWN",
                 event_subtype=f"binance_cloud_mining:{record_type or 'unspecified'}",
                 direction="-" if is_payment else "+",
                 status="COMPLETE" if (is_payment or is_refund) else "REQUIRES_REVIEW",
@@ -1834,9 +1834,9 @@ class BinanceLiveConnector:
         if kind == "mining_account_adjustment":
             adjustment_type = str(payload.get("type", ""))
             event_type, label = {
-                "0": ("REFERRAL_REWARD", "referral"),
-                "1": ("RECEIVE", "refund"),
-                "2": ("CASHBACK", "rebate"),
+                "0": ("INCOME", "referral"),
+                "1": ("DEPOSIT", "refund"),
+                "2": ("INCOME", "rebate"),
             }.get(adjustment_type, ("UNKNOWN", "unrecognized adjustment"))
             return NormalizedEvent(
                 event_type=event_type,
@@ -1856,7 +1856,7 @@ class BinanceLiveConnector:
             is_bonus = kind == "mining_bonus"
             event_type = "MINING_REWARD"
             if is_bonus and payout_type == "3":
-                event_type = "CASHBACK"
+                event_type = "INCOME"
             elif is_bonus and payout_type == "6":
                 event_type = "INCOME"
             elif not is_bonus and payout_type == "8":
@@ -1960,7 +1960,7 @@ class BinanceLiveConnector:
             notional = _positive_amount(payload.get("quoteQty")) or _positive_amount(payload.get("baseQty")) or _positive_amount(payload.get("qty")) or "0"
             fee_note = _positive_amount(payload.get("commission"))
             return NormalizedEvent(
-                event_type="FUTURES_OPEN" if is_open else "FUTURES_CLOSE" if is_close else "UNKNOWN",
+                event_type="WITHDRAWAL" if (is_open or is_close) else "UNKNOWN",
                 event_subtype=f"binance_futures:{payload.get('_futures_mode', 'usdt_m')}:{position_side or 'unspecified'}",
                 direction="-",
                 status="COMPLETE" if (is_open or is_close) else "REQUIRES_REVIEW",
@@ -1985,7 +1985,7 @@ class BinanceLiveConnector:
             quote_asset = str(payload.get("quoteAsset") or "USDT").upper()
             notional = _product_amount(payload.get("price"), payload.get("quantity")) or _positive_amount(payload.get("quantity")) or "0"
             return NormalizedEvent(
-                event_type="OPTION_TRADE",
+                event_type="WITHDRAWAL",
                 event_subtype=f"binance_options:{payload.get('optionSide', 'unspecified')}",
                 direction="-",
                 status="COMPLETE",
@@ -2011,7 +2011,7 @@ class BinanceLiveConnector:
             currency = str(payload.get("currency") or payload.get("quoteAsset") or "USDT").upper()
             fees = [NormalizedFee("EXCHANGE_FEE", currency, fee_amount)] if fee_amount else []
             return NormalizedEvent(
-                event_type="OPTION_EXERCISE",
+                event_type="INCOME",
                 event_subtype=f"binance_options:{payload.get('optionSide', 'unspecified')}",
                 direction="-" if amount_raw.startswith("-") else "+",
                 status="COMPLETE",
@@ -2031,7 +2031,7 @@ class BinanceLiveConnector:
         if kind == "options_bill":
             amount_raw = str(payload.get("amount", "0"))
             bill_type = str(payload.get("type", "")).upper()
-            event_type = "EXCHANGE_FEE" if "FEE" in bill_type else "UNKNOWN"
+            event_type = "INCOME" if "FEE" in bill_type else "UNKNOWN"
             return NormalizedEvent(
                 event_type=event_type,
                 event_subtype=f"binance_options:{bill_type or 'funding_flow'}",

@@ -754,6 +754,13 @@ def add_swap_leg(event_id: int, body: AddSwapLegIn, session: Session = Depends(g
             apply_override(session, event, "event_type", event_type, body.reason or "Recreated as a swap")
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+        # A completed swap isn't a WITHDRAWAL wearing a SWAP label for
+        # display — it genuinely is a swap now, the same as any other. The
+        # override above keeps the correction in the audit trail; writing
+        # the base column too keeps every raw `event_type` filter (Activity
+        # list, exports, tax year grouping) in agreement with it instead of
+        # only the single-event detail view.
+        event.event_type = event_type
 
     session.commit()
     values, modified = effective_values(session, event)

@@ -35,6 +35,26 @@ class SyncResult:
     reconciliation: ReconcileResult | None = None
 
 
+def _flag_issue(session: Session, title: str, detail: str) -> None:
+    """Create or refresh the single open issue for this title instead of
+    piling up a new row every time the same problem recurs — a source that
+    keeps failing the same way (bad credentials, an invalid address, a
+    scheduler retrying every few minutes) would otherwise leave one issue
+    per attempt instead of one issue for the underlying problem."""
+    existing = session.query(Issue).filter_by(title=title, resolved=False).first()
+    if existing is not None:
+        existing.detail = detail
+        existing.created_at = datetime.now(timezone.utc)
+    else:
+        session.add(Issue(event_id=None, severity="warning", title=title, detail=detail))
+
+
+def _resolve_issue(session: Session, title: str) -> None:
+    existing = session.query(Issue).filter_by(title=title, resolved=False).first()
+    if existing is not None:
+        existing.resolved = True
+
+
 def _reconcile_and_flag(session: Session, account: Account, connector) -> ReconcileResult | None:
     """Runs a balance check right after a successful sync, for any source
     that supports one (see fetch_balances on the connector) — every sync,
@@ -51,19 +71,13 @@ def _reconcile_and_flag(session: Session, account: Account, connector) -> Reconc
         return result
 
     title = _BALANCE_MISMATCH_TITLE.format(name=account.name)
-    existing = session.query(Issue).filter_by(title=title, resolved=False).first()
     mismatches = [a for a in result.assets if not a.matches]
     if not mismatches:
-        if existing is not None:
-            existing.resolved = True
+        _resolve_issue(session, title)
         return result
 
     detail = "; ".join(f"{a.asset_symbol}: live {a.live_amount}, ledger {a.computed_amount}" for a in mismatches)
-    if existing is not None:
-        existing.detail = detail
-        existing.created_at = datetime.now(timezone.utc)
-    else:
-        session.add(Issue(event_id=None, severity="warning", title=title, detail=detail))
+    _flag_issue(session, title, detail)
     return result
 
 
@@ -82,10 +96,8 @@ def _check_permissions_and_flag(session: Session, account: Account, connector) -
         return
 
     title = _SPEND_PERMISSION_TITLE.format(name=account.name)
-    existing = session.query(Issue).filter_by(title=title, resolved=False).first()
     if not permissions.has_spend_capability:
-        if existing is not None:
-            existing.resolved = True
+        _resolve_issue(session, title)
         return
 
     detail = (
@@ -93,11 +105,7 @@ def _check_permissions_and_flag(session: Session, account: Account, connector) -
         "This app never uses payment-capable permissions, but you may want to reconnect with a "
         "read-only NWC connection if your wallet supports issuing one."
     )
-    if existing is not None:
-        existing.detail = detail
-        existing.created_at = datetime.now(timezone.utc)
-    else:
-        session.add(Issue(event_id=None, severity="warning", title=title, detail=detail))
+    _flag_issue(session, title, detail)
 
 
 def sync_account(session: Session, account: Account, *, backfill: bool = False) -> SyncResult:
@@ -128,7 +136,7 @@ def sync_account(session: Session, account: Account, *, backfill: bool = False) 
             # page/call failed (plan §48).
             account.status = "error"
             record_sync(session, connector.source_id, imported, status="partial")
-            session.add(Issue(event_id=None, severity="warning", title=f"{account.name} sync stopped early", detail=str(exc)))
+            _flag_issue(session, f"{account.name} sync stopped early", str(exc))
             session.commit()
             return SyncResult(status="unavailable", imported=imported, skipped=skipped, message=str(exc))
 
@@ -147,14 +155,7 @@ def sync_account(session: Session, account: Account, *, backfill: bool = False) 
 
     except ConnectorUnavailable as exc:
         account.status = "error"
-        session.add(
-            Issue(
-                event_id=None,
-                severity="warning",
-                title=f"{account.name} is not reachable",
-                detail=str(exc),
-            )
-        )
+        _flag_issue(session, f"{account.name} is not reachable", str(exc))
         session.commit()
         return SyncResult(status="unavailable", message=str(exc))
 
@@ -168,13 +169,6 @@ def sync_account(session: Session, account: Account, *, backfill: bool = False) 
         account = session.get(Account, account.id) or account
         account.status = "error"
         detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
-        session.add(
-            Issue(
-                event_id=None,
-                severity="warning",
-                title=f"{account.name} sync failed unexpectedly",
-                detail=detail,
-            )
-        )
+        _flag_issue(session, f"{account.name} sync failed unexpectedly", detail)
         session.commit()
         return SyncResult(status="unavailable", message=f"Sync failed unexpectedly: {detail}")

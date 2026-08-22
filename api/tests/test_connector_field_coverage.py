@@ -224,7 +224,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
         self.assertEqual(request.call_args.args[2]["size"], "100")
 
         event = connector.normalize(RawRecord("binance", "margin-interest-42", OCCURRED_AT, {"_kind": "margin_interest", **rows[0]}))
-        self.assertEqual((event.event_type, event.direction, event.asset_symbol, event.amount), ("MARGIN_INTEREST", "-", "USDT", "0.02414667"))
+        self.assertEqual((event.event_type, event.direction, event.asset_symbol, event.amount), ("INTEREST", "-", "USDT", "0.02414667"))
         self.assertEqual(event.order_id, "42")
 
     def test_binance_spot_trade_cursor_and_historical_asset_discovery(self) -> None:
@@ -360,9 +360,9 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 {"_kind": "crypto_loan_adjustment", "orderId": 1, "collateralCoin": "ETH", "amount": "0.05", "direction": "ADDITIONAL"},
             )
         )
-        self.assertEqual((borrow.event_type, borrow.asset_symbol, borrow.secondary_asset_symbol, borrow.secondary_amount), ("MARGIN_BORROW", "USDT", "ETH", "0.2"))
-        self.assertEqual((repay.event_type, repay.direction, repay.secondary_asset_symbol, repay.secondary_amount), ("MARGIN_REPAY", "-", "ETH", "0.2"))
-        self.assertEqual((adjustment.event_type, adjustment.direction, adjustment.amount), ("LENDING_DEPOSIT", "-", "0.05"))
+        self.assertEqual((borrow.event_type, borrow.asset_symbol, borrow.secondary_asset_symbol, borrow.secondary_amount), ("DEPOSIT", "USDT", "ETH", "0.2"))
+        self.assertEqual((repay.event_type, repay.direction, repay.secondary_asset_symbol, repay.secondary_amount), ("WITHDRAWAL", "-", "ETH", "0.2"))
+        self.assertEqual((adjustment.event_type, adjustment.direction, adjustment.amount), ("STAKING_DEPOSIT", "-", "0.05"))
 
     def test_binance_crypto_loan_collateral_repayment_is_not_misclassified_as_spot_repay(self) -> None:
         connector = BinanceLiveConnector("key", "secret", "Binance")
@@ -375,7 +375,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 },
             )
         )
-        self.assertEqual((event.event_type, event.direction, event.asset_symbol, event.amount), ("LIQUIDATION", "-", "ETH", "0.17"))
+        self.assertEqual((event.event_type, event.direction, event.asset_symbol, event.amount), ("WITHDRAWAL", "-", "ETH", "0.17"))
 
     def test_binance_flexible_loan_adjustment_and_liquidation_use_their_documented_fields(self) -> None:
         connector = BinanceLiveConnector("key", "secret", "Binance")
@@ -394,8 +394,8 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 },
             )
         )
-        self.assertEqual((adjustment.event_type, adjustment.direction, adjustment.amount), ("LENDING_WITHDRAWAL", "+", "2.5"))
-        self.assertEqual((liquidation.event_type, liquidation.asset_symbol, liquidation.amount, liquidation.secondary_amount), ("LIQUIDATION", "BNB", "3", "0.2"))
+        self.assertEqual((adjustment.event_type, adjustment.direction, adjustment.amount), ("STAKING_WITHDRAWAL", "+", "2.5"))
+        self.assertEqual((liquidation.event_type, liquidation.asset_symbol, liquidation.amount, liquidation.secondary_amount), ("WITHDRAWAL", "BNB", "3", "0.2"))
         self.assertEqual(liquidation.fees[0].amount, "0.01")
 
     def test_binance_eth_staking_preserves_issued_and_redeemed_asset_legs(self) -> None:
@@ -564,7 +564,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 {"_kind": "uta_financial", "_category": "USDT-FUTURES", "type": "CONTRACT_MAIN_SETTLE_FEE_USER_OUT", "coin": "USDT", "amount": "-0.5", "id": "f1"},
             )
         )
-        self.assertEqual(funding.event_type, "FUNDING_PAYMENT")
+        self.assertEqual(funding.event_type, "INCOME")
         self.assertEqual(funding.direction, "-")
         self.assertEqual(funding.amount, "0.5")
 
@@ -683,7 +683,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 },
             )
         )
-        self.assertEqual(event.event_type, "FUTURES_PNL")
+        self.assertEqual(event.event_type, "INCOME")
         self.assertEqual(event.asset_symbol, "USDT")
         self.assertEqual(event.amount, "12.5")
         self.assertEqual(event.direction, "-")
@@ -704,7 +704,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 },
             )
         )
-        self.assertEqual(event.event_type, "FUTURES_OPEN")
+        self.assertEqual(event.event_type, "WITHDRAWAL")
         self.assertEqual(event.amount, "0")
         self.assertEqual(event.status, "REQUIRES_REVIEW")
 
@@ -739,7 +739,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 },
             )
         )
-        self.assertEqual((event.event_type, event.direction, event.asset_symbol, event.amount), ("FUTURES_PNL", "-", "USDT", "3.5"))
+        self.assertEqual((event.event_type, event.direction, event.asset_symbol, event.amount), ("INCOME", "-", "USDT", "3.5"))
         self.assertEqual((event.trade_id, event.order_id), ("t1", "o1"))
         self.assertEqual((event.fees[0].asset_symbol, event.fees[0].amount), ("USDT", "0.02"))
 
@@ -776,7 +776,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 },
             )
         )
-        self.assertEqual((borrow.event_type, borrow.direction, borrow.asset_symbol, borrow.amount), ("MARGIN_BORROW", "+", "USDT", "100"))
+        self.assertEqual((borrow.event_type, borrow.direction, borrow.asset_symbol, borrow.amount), ("DEPOSIT", "+", "USDT", "100"))
         self.assertEqual((borrow.secondary_asset_symbol, borrow.secondary_amount), ("ETH", "0.05"))
 
         principal = connector.normalize(
@@ -794,8 +794,8 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 {"_kind": "uta_loan_repay_interest", "orderId": "loan-1", "loanCoin": "USDT", "payInterest": "0.15"},
             )
         )
-        self.assertEqual((principal.event_type, principal.direction, principal.secondary_asset_symbol, principal.secondary_amount), ("MARGIN_REPAY", "-", "ETH", "0.04"))
-        self.assertEqual((interest.event_type, interest.direction, interest.amount), ("MARGIN_INTEREST", "-", "0.15"))
+        self.assertEqual((principal.event_type, principal.direction, principal.secondary_asset_symbol, principal.secondary_amount), ("WITHDRAWAL", "-", "ETH", "0.04"))
+        self.assertEqual((interest.event_type, interest.direction, interest.amount), ("INTEREST", "-", "0.15"))
 
     def test_bitget_uta_crypto_loan_liquidation_and_collateral_adjustment_are_typed(self) -> None:
         connector = BitgetLiveConnector("key", "secret", "pass", "Bitget")
@@ -814,9 +814,9 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 {"_kind": "uta_loan_pledge_adjustment", "orderId": "loan-1", "pledgeCoin": "BGB", "reviseAmount": "4", "reviseSide": "down"},
             )
         )
-        self.assertEqual((liquidation.event_type, liquidation.direction, liquidation.amount), ("LIQUIDATION", "-", "20"))
+        self.assertEqual((liquidation.event_type, liquidation.direction, liquidation.amount), ("WITHDRAWAL", "-", "20"))
         self.assertEqual(liquidation.fees[0].amount, "0.1")
-        self.assertEqual((adjustment.event_type, adjustment.direction), ("LENDING_DEPOSIT", "-"))
+        self.assertEqual((adjustment.event_type, adjustment.direction), ("STAKING_DEPOSIT", "-"))
 
     def test_bitget_uta_numbered_history_paginates_to_a_short_page(self) -> None:
         connector = BitgetLiveConnector("key", "secret", "pass", "Bitget")
@@ -999,8 +999,8 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 {"_kind": "margin_repay", "_margin_mode": "isolated", "_margin_symbol": "BTCUSDT", "repayId": "1", "coin": "USDT", "repayAmount": "10"},
             )
         )
-        self.assertEqual((borrow.event_type, borrow.event_subtype, borrow.amount), ("MARGIN_BORROW", "isolated_margin", "25"))
-        self.assertEqual((repay.event_type, repay.event_subtype, repay.amount), ("MARGIN_REPAY", "isolated_margin", "10"))
+        self.assertEqual((borrow.event_type, borrow.event_subtype, borrow.amount), ("DEPOSIT", "isolated_margin", "25"))
+        self.assertEqual((repay.event_type, repay.event_subtype, repay.amount), ("WITHDRAWAL", "isolated_margin", "10"))
 
     def test_binance_coin_m_futures_income_preserves_its_settlement_mode(self) -> None:
         connector = BinanceLiveConnector("key", "secret", "Binance")
@@ -1010,7 +1010,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 {"_kind": "futures_income", "_futures_mode": "coin_m", "incomeType": "FUNDING_FEE", "asset": "BTC", "income": "0.0001", "tranId": 1},
             )
         )
-        self.assertEqual((event.event_type, event.event_subtype, event.asset_symbol, event.amount), ("FUNDING_PAYMENT", "futures:coin_m:FUNDING_FEE", "BTC", "0.0001"))
+        self.assertEqual((event.event_type, event.event_subtype, event.asset_symbol, event.amount), ("INCOME", "futures:coin_m:FUNDING_FEE", "BTC", "0.0001"))
 
     def test_binance_futures_fill_keeps_contract_context_without_changing_holdings(self) -> None:
         connector = BinanceLiveConnector("key", "secret", "Binance")
@@ -1025,7 +1025,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 },
             )
         )
-        self.assertEqual((event.event_type, event.status, event.asset_symbol, event.amount), ("FUTURES_OPEN", "COMPLETE", "USDT", "500"))
+        self.assertEqual((event.event_type, event.status, event.asset_symbol, event.amount), ("WITHDRAWAL", "COMPLETE", "USDT", "500"))
         self.assertEqual((event.secondary_asset_symbol, event.secondary_amount), ("USDT", "500"))
         self.assertIn("commission 0.2 USDT", event.notes or "")
 
@@ -1049,9 +1049,9 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 {"_kind": "options_bill", "id": 1, "asset": "USDT", "amount": "-0.1", "type": "TRANSACTION_FEE"},
             )
         )
-        self.assertEqual((trade.event_type, trade.asset_symbol, trade.amount, trade.secondary_amount), ("OPTION_TRADE", "USDT", "10.0", "10.0"))
-        self.assertEqual((exercise.event_type, exercise.direction, exercise.amount, exercise.fees[0].amount), ("OPTION_EXERCISE", "+", "25", "0.1"))
-        self.assertEqual((bill.event_type, bill.direction, bill.amount), ("EXCHANGE_FEE", "-", "0.1"))
+        self.assertEqual((trade.event_type, trade.asset_symbol, trade.amount, trade.secondary_amount), ("WITHDRAWAL", "USDT", "10.0", "10.0"))
+        self.assertEqual((exercise.event_type, exercise.direction, exercise.amount, exercise.fees[0].amount), ("INCOME", "+", "25", "0.1"))
+        self.assertEqual((bill.event_type, bill.direction, bill.amount), ("INCOME", "-", "0.1"))
 
     def test_binance_leveraged_token_records_keep_usdt_trade_legs_and_fees(self) -> None:
         connector = BinanceLiveConnector("key", "secret", "Binance")
@@ -1122,11 +1122,11 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
         )
         self.assertEqual(
             (commission_rebate.event_type, commission_rebate.direction, commission_rebate.asset_symbol, commission_rebate.amount),
-            ("CASHBACK", "+", "BNB", "0.01"),
+            ("INCOME", "+", "BNB", "0.01"),
         )
         self.assertEqual(
             (referral_kickback.event_type, referral_kickback.direction, referral_kickback.asset_symbol, referral_kickback.amount),
-            ("REFERRAL_REWARD", "+", "USDT", "1"),
+            ("INCOME", "+", "USDT", "1"),
         )
 
     def test_binance_bfusd_and_rwusd_keep_yield_asset_pairs_and_rewards(self) -> None:
@@ -1151,7 +1151,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
         )
         self.assertEqual((subscription.event_type, subscription.asset_symbol, subscription.secondary_asset_symbol, subscription.secondary_amount), ("STAKING_DEPOSIT", "USDT", "BFUSD", "100"))
         self.assertEqual((redemption.event_type, redemption.asset_symbol, redemption.secondary_asset_symbol, redemption.secondary_amount), ("STAKING_WITHDRAWAL", "RWUSD", "USDT", "20"))
-        self.assertEqual((reward.event_type, reward.asset_symbol, reward.amount), ("YIELD", "USDT", "0.1"))
+        self.assertEqual((reward.event_type, reward.asset_symbol, reward.amount), ("STAKING_REWARD", "USDT", "0.1"))
 
     def test_binance_cloud_mining_payments_and_refunds_keep_their_direction(self) -> None:
         connector = BinanceLiveConnector("key", "secret", "Binance")
@@ -1168,7 +1168,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
             )
         )
         self.assertEqual((payment.event_type, payment.direction, payment.asset_symbol, payment.amount), ("PAYMENT", "-", "USDT", "25"))
-        self.assertEqual((refund.event_type, refund.direction, refund.asset_symbol, refund.amount), ("RECEIVE", "+", "USDT", "5"))
+        self.assertEqual((refund.event_type, refund.direction, refund.asset_symbol, refund.amount), ("DEPOSIT", "+", "USDT", "5"))
 
     def test_binance_universal_transfer_is_visible_but_balance_neutral(self) -> None:
         connector = BinanceLiveConnector("key", "secret", "Binance")
@@ -1203,7 +1203,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
         )
         self.assertEqual((earning.event_type, earning.status, earning.asset_symbol, earning.amount), ("MINING_REWARD", "COMPLETE", "BTC", "0.0001"))
         self.assertIn("main", earning.notes or "")
-        self.assertEqual((rebate.event_type, rebate.status, rebate.asset_symbol, rebate.amount), ("CASHBACK", "COMPLETE", "BTC", "0.00001"))
+        self.assertEqual((rebate.event_type, rebate.status, rebate.asset_symbol, rebate.amount), ("INCOME", "COMPLETE", "BTC", "0.00001"))
         self.assertEqual((transferred.event_type, transferred.status), ("UNKNOWN", "REQUIRES_REVIEW"))
 
     def test_binance_pool_history_discovers_algorithms_accounts_and_payouts(self) -> None:
@@ -1237,7 +1237,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 {"_kind": "uta_financial", "_category": "MARGIN", "id": "1", "type": "INTEREST_SETTLEMENT_OUT", "coin": "USDT", "amount": "-0.12"},
             )
         )
-        self.assertEqual((interest.event_type, interest.direction, interest.amount), ("MARGIN_INTEREST", "-", "0.12"))
+        self.assertEqual((interest.event_type, interest.direction, interest.amount), ("INTEREST", "-", "0.12"))
 
         copy_share = connector.normalize(
             RawRecord(
@@ -1247,7 +1247,7 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 {"_kind": "uta_financial", "_category": "OTHER", "id": "2", "type": "TRACE_SHARE_BENEFIT_USER_OUT", "coin": "USDT", "amount": "-2"},
             )
         )
-        self.assertEqual((copy_share.event_type, copy_share.direction), ("FEE", "-"))
+        self.assertEqual((copy_share.event_type, copy_share.direction), ("WITHDRAWAL", "-"))
         self.assertTrue(_is_additional_uta_financial({"type": "NEW_BITGET_PRODUCT"}))
         self.assertFalse(_is_additional_uta_financial({"type": "ORDER_DEALT_IN"}))
 
@@ -1265,8 +1265,8 @@ class ConnectorFieldCoverageTests(unittest.TestCase):
                 {"_kind": "uta_copy_transfer", "transferId": "2", "fromType": "lead", "toType": "funding,uta", "coin": "USDT", "amount": "30", "status": "Successful"},
             )
         )
-        self.assertEqual((allocation.event_type, allocation.direction, allocation.amount), ("LENDING_DEPOSIT", "-", "100"))
-        self.assertEqual((release.event_type, release.direction, release.amount), ("LENDING_WITHDRAWAL", "+", "30"))
+        self.assertEqual((allocation.event_type, allocation.direction, allocation.amount), ("STAKING_DEPOSIT", "-", "100"))
+        self.assertEqual((release.event_type, release.direction, release.amount), ("STAKING_WITHDRAWAL", "+", "30"))
 
     def test_bitget_internal_wallet_transfers_remain_visible_and_balance_neutral(self) -> None:
         connector = BitgetLiveConnector("key", "secret", "passphrase", "Bitget")

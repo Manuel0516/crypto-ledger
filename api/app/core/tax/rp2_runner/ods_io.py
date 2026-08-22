@@ -20,16 +20,13 @@ from ..common import EffectiveEvent, TransferPair, is_liquidity_reward
 # this stage — readiness blocks report generation on unclassified transfers,
 # and other unmapped types simply aren't cost-basis events.
 IN_TYPE_MAP = {
-    "BUY": "BUY", "AIRDROP": "AIRDROP", "INCOME": "INCOME", "INTEREST": "INTEREST", "YIELD": "INTEREST",
+    "BUY": "BUY", "AIRDROP": "AIRDROP", "INCOME": "INCOME", "INTEREST": "INTEREST",
     "STAKING_REWARD": "STAKING", "MINING_REWARD": "MINING", "GIFT_RECEIVED": "GIFT",
-    "REFERRAL_REWARD": "INCOME", "CASHBACK": "INCOME", "LENDING_REWARD": "INTEREST", "LP_REWARD": "INCOME",
-    "MARGIN_INTEREST": "INTEREST", "NFT_MINT": "INCOME", "TOKEN_MINT": "INCOME", "LIGHTNING_RECEIVE": "INCOME",
 }
 # RP2 has no dedicated "spent on goods/services" category; PAYMENT is
 # economically a disposal at market value, same as SELL.
 OUT_TYPE_MAP = {
-    "SELL": "SELL", "PAYMENT": "SELL", "DONATION": "DONATE", "GIFT_SENT": "GIFT",
-    "LOST": "LOST", "STOLEN": "LOST", "NFT_SELL": "SELL", "LIGHTNING_SEND": "SELL", "TOKEN_BURN": "LOST",
+    "SELL": "SELL", "PAYMENT": "SELL", "DONATION": "DONATE", "GIFT_SENT": "GIFT", "LOST": "LOST",
 }
 
 _IN_HEADER = ["timestamp", "exchange", "holder", "asset", "transaction_type", "spot_price", "crypto_in", "fiat_fee", "unique_id", "notes"]
@@ -146,7 +143,7 @@ def build_input(session: Session, events: list[EffectiveEvent], pairs: list[Tran
             by_asset[sec_asset].in_rows.append([_iso(event), label(event.wallet_display), taxpayer_name, sec_asset, "BUY", str(sec_unit_price), str(sec_amount), "0", f"{event.id}-swap-in", ""])
 
         elif event.event_type in OUT_TYPE_MAP:
-            is_loss = event.event_type in ("LOST", "STOLEN")
+            is_loss = event.event_type == "LOST"
             unit_price = Decimal(0) if is_loss else _eur_unit_price(event)
             if unit_price is None:
                 warnings.append(f"Event #{event.id} ({event.event_type} {amount} {asset}) has no EUR price yet — excluded from the RP2 input.")

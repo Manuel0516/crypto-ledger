@@ -40,6 +40,18 @@ _LP_POSITION_MANAGERS: dict[str, str] = {
     "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364": "PancakeSwap V3",
 }
 
+# Known wrapped-native token contracts, keyed by lowercase address. Calling
+# withdraw() on one of these doesn't reliably emit an indexed ERC-20 Transfer
+# log the same way an ordinary token move does — the explorer only ever
+# reports a zero-value call to the contract plus a plain native transfer back
+# — so there is no token leg for the swap merge below to pair against.
+# Unwrapping (and wrapping) is a one-for-one swap between the token and its
+# native coin; recognizing the contract lets that leg be filled in exactly
+# rather than guessed at.
+_WRAPPED_NATIVE_CONTRACTS: dict[str, str] = {
+    "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c": "WBNB",
+}
+
 CHAIN_IDS: dict[str, str] = {
     "ethereum": "1",
     "polygon": "137",
@@ -250,7 +262,9 @@ class EVMAddressConnector:
             raise ConnectorUnavailable(f"Invalid EVM address '{self.address}'. Use a 0x-prefixed 40-hex-character address.")
         namespace = f"{self.source_id}:{self.chain}:{self.address}"
         raw_entries = self._fetch_raw_payloads(base, network, native_symbol, since)
-        for payload, external_id in _merge_swap_legs(_merge_lp_deposits(raw_entries, self.address), self.address):
+        wrap_aware_entries = _synthesize_wrap_legs(raw_entries, self.address)
+        merged_entries = _merge_swap_legs(_merge_lp_deposits(wrap_aware_entries, self.address), self.address)
+        for payload, external_id in _relabel_lp_collects(merged_entries, self.address):
             yield RawRecord(namespace, external_id, _timestamp(payload["timeStamp"]), payload)
 
     def _fetch_raw_payloads(self, base: str, network: str, native_symbol: str, since: datetime | None) -> Iterable[tuple[dict, str]]:
@@ -419,17 +433,20 @@ class EVMAddressConnector:
             )
 
         if kind == "native":
+            lp_collect = payload.get("_lp_collect_protocol")
             event_type, direction = ("DEPOSIT", "+") if is_incoming else ("WITHDRAWAL", "-")
             amount = int(payload["value"]) / 1e18
             fees: list[NormalizedFee] = []
             if not is_incoming and not payload.get("_internal"):
                 gas_eth = int(payload["gasUsed"]) * int(payload["gasPrice"]) / 1e18
                 fees.append(NormalizedFee(fee_type="GAS_FEE", asset_symbol=native_symbol, amount=f"{gas_eth:.18f}"))
+            if lp_collect and is_incoming:
+                event_type = "LIQUIDITY"
             return NormalizedEvent(
                 event_type=event_type,
-                event_subtype="native",
+                event_subtype="dex_lp_collect" if lp_collect and is_incoming else "native",
                 direction=direction,
-                status="COMPLETE",
+                status="REQUIRES_REVIEW" if lp_collect and is_incoming else "COMPLETE",
                 occurred_at=occurred_at,
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=native_symbol,
@@ -438,7 +455,12 @@ class EVMAddressConnector:
                 account_name=self.account_label,
                 address_from=payload.get("from"),
                 address_to=payload.get("to"),
-                notes=f"On-chain tx {payload['hash'][:12]}…",
+                notes=(
+                    f"{lp_collect} liquidity collected · confirm whether this is fee income or a withdrawal of "
+                    f"principal · {payload['hash'][:12]}…"
+                    if lp_collect and is_incoming
+                    else f"On-chain tx {payload['hash'][:12]}…"
+                ),
                 fees=fees,
                 tx_hash=payload.get("hash"),
                 block_height=_maybe_int(payload.get("blockNumber")),
@@ -446,6 +468,7 @@ class EVMAddressConnector:
             )
 
         if kind == "token":
+            lp_collect = payload.get("_lp_collect_protocol")
             event_type, direction = ("DEPOSIT", "+") if is_incoming else ("WITHDRAWAL", "-")
             decimals = int(payload.get("tokenDecimal") or 18)
             amount = int(payload["value"]) / (10**decimals)
@@ -453,11 +476,13 @@ class EVMAddressConnector:
             if payload.get("_fee_for_wallet"):
                 gas_eth = int(payload.get("gasUsed") or 0) * int(payload.get("gasPrice") or 0) / 1e18
                 fees.append(NormalizedFee(fee_type="GAS_FEE", asset_symbol=native_symbol, amount=f"{gas_eth:.18f}"))
+            if lp_collect and is_incoming:
+                event_type = "LIQUIDITY"
             return NormalizedEvent(
                 event_type=event_type,
-                event_subtype="token",
+                event_subtype="dex_lp_collect" if lp_collect and is_incoming else "token",
                 direction=direction,
-                status="COMPLETE",
+                status="REQUIRES_REVIEW" if lp_collect and is_incoming else "COMPLETE",
                 occurred_at=occurred_at,
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=payload.get("tokenSymbol") or "UNKNOWN",
@@ -468,7 +493,12 @@ class EVMAddressConnector:
                 account_name=self.account_label,
                 address_from=payload.get("from"),
                 address_to=payload.get("to"),
-                notes=f"{payload.get('tokenName') or 'Token'} transfer {payload['hash'][:12]}…",
+                notes=(
+                    f"{lp_collect} liquidity collected · confirm whether this is fee income or a withdrawal of "
+                    f"principal · {payload['hash'][:12]}…"
+                    if lp_collect and is_incoming
+                    else f"{payload.get('tokenName') or 'Token'} transfer {payload['hash'][:12]}…"
+                ),
                 fees=fees,
                 tx_hash=payload.get("hash"),
                 block_height=_maybe_int(payload.get("blockNumber")),
@@ -516,7 +546,13 @@ class EVMAddressConnector:
                 event_type="LIQUIDITY",
                 event_subtype="dex_lp_deposit",
                 direction="-",
-                status="COMPLETE",
+                # The facts (asset, amount, tx) are confident — this isn't a
+                # data-quality flag. Tax treatment for adding liquidity is
+                # never assigned automatically (plan: LIQUIDITY needs a
+                # person's decision), so it's a real thing to review, and
+                # "Mark reviewed" (see api/events.py) is how it stops
+                # reappearing once a person has actually looked at it.
+                status="REQUIRES_REVIEW",
                 occurred_at=occurred_at,
                 original_timestamp=occurred_at.isoformat(),
                 asset_symbol=payload["_out_symbol"],
@@ -538,9 +574,13 @@ class EVMAddressConnector:
                 contract_address=payload.get("_position_contract"),
             )
 
-        # nft721 / nft1155
+        # nft721 / nft1155 — a mint is treated as income (received for free,
+        # same as RP2's own vocabulary); an ordinary transfer folds into
+        # DEPOSIT/WITHDRAWAL by direction rather than TRANSFER, which would
+        # incorrectly auto-flag it as an internal move (see service.py's
+        # ingest()).
         is_mint = payload.get("from", "").lower() == _ZERO_ADDRESS
-        event_type = "NFT_MINT" if is_mint else "NFT_TRANSFER"
+        event_type = "INCOME" if is_mint else ("DEPOSIT" if is_incoming else "WITHDRAWAL")
         direction = "+" if is_incoming else "-"
         quantity = payload.get("tokenValue", "1") if kind == "nft1155" else "1"
         token_id = payload.get("tokenID", "")
@@ -605,9 +645,133 @@ def _leg_gas_fee(leg: dict, group: list[tuple[dict, str]]) -> float | None:
     return None
 
 
+def _synthesize_wrap_legs(entries: Iterable[tuple[dict, str]], address: str) -> Iterable[tuple[dict, str]]:
+    """Fill in the missing wrapped-token leg of a wrap/unwrap call so the
+    ordinary swap merge below can recognize it as one swap instead of a bare
+    zero-value contract call plus an unrelated-looking native transfer.
+
+    Only synthesizes a leg when the transaction has a zero-value call from
+    the wallet to a known wrapped-native contract, a paired native transfer
+    to/from that same contract, and no token leg already accounts for it —
+    the synthetic leg's amount is exactly the real native leg's amount
+    (wrapped tokens are one-for-one with their native coin), never guessed.
+    """
+    address = address.lower()
+    buffered = list(entries)
+    by_hash: dict[str, list[tuple[dict, str]]] = {}
+    for payload, external_id in buffered:
+        by_hash.setdefault(payload["hash"], []).append((payload, external_id))
+
+    extra: list[tuple[dict, str]] = []
+    replaced_native_ids: set[str] = set()
+    for tx_hash, group in by_hash.items():
+        call = next(
+            (
+                p
+                for p, _ in group
+                if p["_kind"] == "contract_call"
+                and p.get("from", "").lower() == address
+                and p.get("to", "").lower() in _WRAPPED_NATIVE_CONTRACTS
+            ),
+            None,
+        )
+        if call is None:
+            continue
+        contract = call["to"].lower()
+        already_has_leg = any(p["_kind"] == "token" and p.get("contractAddress", "").lower() == contract for p, _ in group)
+        if already_has_leg:
+            continue
+        native_entry = next(
+            (
+                (p, eid)
+                for p, eid in group
+                if p["_kind"] == "native"
+                and (
+                    (p.get("from", "").lower() == contract and p.get("to", "").lower() == address)
+                    or (p.get("from", "").lower() == address and p.get("to", "").lower() == contract)
+                )
+            ),
+            None,
+        )
+        if native_entry is None:
+            continue
+        native, native_external_id = native_entry
+        unwrapping = native.get("from", "").lower() == contract
+        symbol = _WRAPPED_NATIVE_CONTRACTS[contract]
+        synthetic = {
+            **native,
+            "_kind": "token",
+            "_internal": False,
+            "from": address if unwrapping else contract,
+            "to": contract if unwrapping else address,
+            "contractAddress": call["to"],
+            "tokenSymbol": symbol,
+            "tokenName": symbol,
+            "tokenDecimal": "18",
+            "logIndex": f"wrap-{native.get('logIndex', '0')}",
+        }
+        extra.append((synthetic, f"{tx_hash}-wrap-{contract}"))
+        # The counterparty is now a known, recognized wrapped-native
+        # contract rather than an unattributed internal transfer — eligible
+        # for the swap merge below the same as any ordinary paired leg.
+        extra.append(({**native, "_internal": False}, native_external_id))
+        replaced_native_ids.add(native_external_id)
+
+    for payload, external_id in buffered:
+        if external_id in replaced_native_ids:
+            continue
+        extra.append((payload, external_id))
+    yield from extra
+
+
+def _relabel_lp_collects(entries: Iterable[tuple[dict, str]], address: str) -> Iterable[tuple[dict, str]]:
+    """Flag a token/native leg arriving from a known LP position manager, in
+    a transaction with no NFT leg, as liquidity collected from an existing
+    position rather than a plain deposit — normalize() turns this into a
+    LIQUIDITY event needing review instead of a generic DEPOSIT.
+
+    Whether a given collect() call is fee income or a partial/full return of
+    principal isn't observable from the transfer legs alone — the two look
+    identical from outside the contract — so this never picks one; it only
+    makes sure the activity is never mislabeled as if it came from nowhere.
+    A mint (deposit, an NFT arrives) or a full withdrawal (the position NFT
+    is burned) has its own NFT leg and is handled elsewhere, so a group with
+    an NFT leg is left untouched here.
+    """
+    address = address.lower()
+    buffered = list(entries)
+    by_hash: dict[str, list[tuple[dict, str]]] = {}
+    for payload, external_id in buffered:
+        by_hash.setdefault(payload["hash"], []).append((payload, external_id))
+
+    collect_hashes: dict[str, str] = {}
+    for tx_hash, group in by_hash.items():
+        call = next(
+            (
+                p
+                for p, _ in group
+                if p["_kind"] == "contract_call"
+                and p.get("from", "").lower() == address
+                and p.get("to", "").lower() in _LP_POSITION_MANAGERS
+            ),
+            None,
+        )
+        if call is None or any(p["_kind"] in ("nft721", "nft1155") for p, _ in group):
+            continue
+        collect_hashes[tx_hash] = _LP_POSITION_MANAGERS[call["to"].lower()]
+
+    for payload, external_id in buffered:
+        protocol = collect_hashes.get(payload["hash"])
+        # Only the leg arriving at the wallet is the collected amount; the
+        # wallet's own outgoing leg in the same tx (if any) is left as-is.
+        if protocol and payload["_kind"] in ("native", "token") and payload.get("to", "").lower() == address:
+            payload = {**payload, "_lp_collect_protocol": protocol}
+        yield payload, external_id
+
+
 def _merge_lp_deposits(entries: Iterable[tuple[dict, str]], address: str) -> Iterable[tuple[dict, str]]:
     """Recognize minting a liquidity position (plan §15's liquidity case) as
-    one LIQUIDITY event instead of a bare NFT_MINT plus the token legs that
+    one LIQUIDITY event instead of a bare NFT arrival plus the token legs that
     funded it. A position-manager mint transaction is a fresh position NFT
     (from the zero address) at a known ``_LP_POSITION_MANAGERS`` contract,
     alongside one or two native/token legs the wallet itself sent in the same

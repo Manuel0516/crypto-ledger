@@ -5,10 +5,6 @@ const kindTone: Record<string, BadgeTone> = {
   trade: "accent",
   income: "success",
   move: "info",
-  fee: "warning",
-  loan: "neutral",
-  nft: "accent",
-  lightning: "info",
   review: "warning",
   other: "neutral",
 };
